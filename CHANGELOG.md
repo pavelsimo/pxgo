@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial Go rewrite of the Python px proxy
+- Initial Go rewrite of the Python Px proxy
 - HTTP/HTTPS proxy with CONNECT tunnel support
 - NTLM authentication via `go-ntlmssp`
 - Kerberos authentication support (Linux/macOS)

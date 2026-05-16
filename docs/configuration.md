@@ -1,6 +1,6 @@
 # Configuration
 
-Px configuration sources are applied in this order:
+pxgo configuration sources are applied in this order:
 
 ```text
 defaults < pxgo.ini < .env < environment < command line
@@ -11,9 +11,9 @@ Environment variables use the `PX_` prefix. For example, `--proxy` maps to
 
 ## Config File Lookup
 
-When `--config` is provided, Px reads that exact file.
+When `--config` is provided, pxgo reads that exact file.
 
-Without `--config`, Px checks:
+Without `--config`, pxgo checks:
 
 1. `./pxgo.ini`
 2. the platform config directory
@@ -21,16 +21,16 @@ Without `--config`, Px checks:
 
 Platform config directories:
 
-- Windows: `%APPDATA%\px`
+- Windows: `%APPDATA%\pxgo`
 - macOS: `~/Library/Application Support/pxgo`
-- Linux/Unix: `$XDG_CONFIG_HOME/px` or `~/.config/pxgogo`
+- Linux/Unix: `$XDG_CONFIG_HOME/pxgo` or `~/.config/pxgo`
 
 ## Starter Config
 
 Generate a config:
 
 ```bash
-./px --save --config=./pxgo.ini --proxy=proxy.company.com:8080
+./pxgo --save --config=./pxgo.ini --proxy=proxy.company.com:8080
 ```
 
 Use the commented repository sample [../pxgo.ini](../pxgo.ini) when you want a
@@ -79,18 +79,17 @@ human-edited config with explanations.
 For non-interactive runs, use environment variables:
 
 ```bash
-PX_PASSWORD='upstream-secret' ./px --username='DOMAIN\user'
-PX_CLIENT_PASSWORD='client-secret' ./px --client-username=client
+PX_PASSWORD='upstream-secret' ./pxgo --username='DOMAIN\user'
+PX_CLIENT_PASSWORD='client-secret' ./pxgo --client-username=client
 ```
 
 The Go port also has a simple opt-in plaintext keyring for tests and controlled
 deployments:
 
 ```bash
-PX_KEYRING_PLAINTEXT=1 ./px --username='DOMAIN\user' --password
-PX_KEYRING_PLAINTEXT=1 ./px --client-username=client --client-password
+PX_KEYRING_PLAINTEXT=1 ./pxgo --username='DOMAIN\user' --password
+PX_KEYRING_PLAINTEXT=1 ./pxgo --client-username=client --client-password
 ```
 
 Use `PX_KEYRING_FILE=/path/to/keyring.json` to choose the plaintext keyring
 file.
-

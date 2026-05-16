@@ -3,21 +3,21 @@
 ## Local Build
 
 ```bash
-go build -o px .
+go build -o pxgo .
 ```
 
 Cross-compile examples:
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o dist/px-linux-amd64 .
-GOOS=darwin GOARCH=arm64 go build -o dist/px-darwin-arm64 .
-GOOS=windows GOARCH=amd64 go build -o dist/px-windows-amd64.exe .
+GOOS=linux GOARCH=amd64 go build -o dist/pxgo-linux-amd64 .
+GOOS=darwin GOARCH=arm64 go build -o dist/pxgo-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -o dist/pxgo-windows-amd64.exe .
 ```
 
 ## Docker Build
 
 ```bash
-docker build -t px-go .
+docker build -t pxgo .
 ```
 
 The root `Dockerfile` builds the Go binary in a Go builder image, then copies it
@@ -37,4 +37,3 @@ project's test infrastructure.
 ## Version
 
 The current version string is defined in `main.go`.
-

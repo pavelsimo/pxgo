@@ -1,6 +1,6 @@
-# Px Go Documentation
+# pxgo Documentation
 
-Px Go is a single-binary HTTP/HTTPS proxy. It is configured with CLI flags,
+pxgo is a single-binary HTTP/HTTPS proxy. It is configured with CLI flags,
 environment variables, `.env`, or `pxgo.ini`.
 
 - [Installation](installation.md)
@@ -10,4 +10,3 @@ environment variables, `.env`, or `pxgo.ini`.
 - [Build](build.md)
 - [Testing](testing.md)
 - [Changelog](changelog.md)
-

@@ -10,19 +10,19 @@ Requirements:
 Build:
 
 ```bash
-go build -o px .
+go build -o pxgo .
 ```
 
 Run:
 
 ```bash
-./px
+./pxgo
 ```
 
 Install somewhere on `PATH` if desired:
 
 ```bash
-install -m 0755 px ~/.local/bin/px
+install -m 0755 pxgo ~/.local/bin/pxgo
 ```
 
 ## Docker
@@ -55,10 +55,9 @@ The runtime image includes Kerberos command-line tools so `--kerberos` can use
 The Go port includes the Windows startup command builder and CLI flags:
 
 ```powershell
-px.exe --install --config C:\path\to\pxgo.ini
-px.exe --uninstall
+pxgo.exe --install --config C:\path\to\pxgo.ini
+pxgo.exe --uninstall
 ```
 
 Startup registry operations are Windows-only. On non-Windows platforms the
 commands return an unsupported-platform error.
-
