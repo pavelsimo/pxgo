@@ -18,8 +18,9 @@ import { join, basename } from "path";
 
 const TOOL      = "pxgo";
 const REPO_URL  = "https://github.com/pavelsimo/pxgo";
-const BREW_TAP  = "pavelsimo/homebrew-tap";
-const DESC      = "HTTP/HTTPS proxy with NTLM and Kerberos authentication — single Go binary";
+const DESC      = "single-binary HTTP/HTTPS proxy for NTLM and Kerberos corporate networks";
+const HERO_COPY = "Run a local proxy that lets browsers, package managers, CLIs, and build tools authenticate cleanly through enterprise upstream proxies.";
+const INSTALL_CMD = "make build && ./bin/pxgo";
 const SITE_BASE = existsSync("docs/CNAME")
   ? `https://${readFileSync("docs/CNAME","utf8").trim()}`
   : `https://pavelsimo.github.io/pxgo`;
@@ -199,6 +200,7 @@ function parse(src) {
     }
 
     if(line.trim()===""){flushBlock();continue;}
+    if(line.match(/^\[[^\]]+\]:\s+\S+/)){flushBlock();continue;}
 
     flushUl();flushOl();
     if(!inPara){out.push("<p>");inPara=true;} else out.push(" ");
@@ -231,46 +233,104 @@ function sidebarHtml(pages, currentSlug) {
   for (const { slug, label } of pages) {
     const sec = slugSection[slug];
     if (sec !== lastSection) {
-      items += `<li class="nav-group"><h2>${esc(sec)}</h2></li>\n`;
+      items += `<li class="nav-group" data-nav-group><h2>${esc(sec)}</h2></li>\n`;
       lastSection = sec;
     }
     const active = slug === currentSlug ? ' class="active"' : "";
-    items += `<li><a href="${slug}.html"${active}>${esc(label)}</a></li>\n`;
+    items += `<li data-nav-item><a href="${slug}.html"${active} data-search-text="${esc(`${label} ${sec} ${PAGE_KEYWORDS[slug] || ""}`)}">${esc(label)}</a></li>\n`;
   }
 
-  return `<nav class="sidebar" id="sidebar" aria-label="Site navigation">
-  <div class="sidebar-brand">
-    <a href="index.html" class="brand-link">
-      <span class="brand-mark">🔀</span>
-      ${TOOL}
+  return `<aside class="sidebar" id="sidebar" aria-label="Site navigation">
+  <div class="sidebar-head">
+    <a href="index.html" class="brand-link" aria-label="pxgo docs home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" role="img">
+          <defs>
+            <linearGradient id="markA" x1="10" x2="54" y1="8" y2="56">
+              <stop offset="0" stop-color="#ff8a6d"/>
+              <stop offset=".55" stop-color="#ff6b4a"/>
+              <stop offset="1" stop-color="#d9482e"/>
+            </linearGradient>
+            <linearGradient id="markB" x1="54" x2="10" y1="10" y2="58">
+              <stop offset="0" stop-color="#47c2b1"/>
+              <stop offset="1" stop-color="#1f8f83"/>
+            </linearGradient>
+          </defs>
+          <rect x="8" y="9" width="48" height="46" rx="14" fill="url(#markA)"/>
+          <path d="M18 24h18c5.5 0 10 4.5 10 10s-4.5 10-10 10H18v-7h18a3 3 0 0 0 0-6H18z" fill="#fff" opacity=".94"/>
+          <path d="M46 19l8 8-8 8v-6H29v-4h17z" fill="url(#markB)"/>
+          <path d="M18 45l-8-8 8-8v6h17v4H18z" fill="url(#markB)"/>
+        </svg>
+      </span>
+      <span>
+        <strong>${TOOL}</strong>
+        <small>authenticated proxy</small>
+      </span>
     </a>
+    <button class="theme-toggle" id="themeBtn" type="button" aria-label="Toggle dark mode" aria-pressed="true">
+      <span class="theme-toggle-indicator">
+        <svg class="theme-icon-moon" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M14.6 12.1A6.5 6.5 0 0 1 7.4 2.7a6.5 6.5 0 1 0 7.2 9.4z" fill="currentColor"/>
+        </svg>
+        <svg class="theme-icon-sun" viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="10" cy="10" r="3.4" fill="currentColor"/>
+          <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <line x1="10" y1="2" x2="10" y2="4"/><line x1="10" y1="16" x2="10" y2="18"/>
+            <line x1="2" y1="10" x2="4" y2="10"/><line x1="16" y1="10" x2="18" y2="10"/>
+            <line x1="4.2" y1="4.2" x2="5.6" y2="5.6"/><line x1="14.4" y1="14.4" x2="15.8" y2="15.8"/>
+            <line x1="4.2" y1="15.8" x2="5.6" y2="14.4"/><line x1="14.4" y1="5.6" x2="15.8" y2="4.2"/>
+          </g>
+        </svg>
+      </span>
+    </button>
   </div>
+  <label class="search">
+    <span>Search</span>
+    <input id="docSearch" type="search" placeholder="kerberos, pac, docker" autocomplete="off">
+  </label>
   <ul class="sidebar-nav">${items}</ul>
   <div class="sidebar-footer">
     <a href="${REPO_URL}" target="_blank" rel="noopener" class="gh-link">
       <svg height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
     </a>
-    <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">
-      <span class="icon-sun">☀️</span>
-      <span class="icon-moon">🌙</span>
-      <span id="themeLabel">Light</span>
-    </button>
   </div>
-</nav>`;
+</aside>`;
 }
 
 function heroHtml() {
-  return `<section class="hero">
-  <p class="hero-eyebrow">CLI Proxy Tool</p>
-  <h1 class="hero-title">🔀 ${TOOL}</h1>
-  <p class="hero-desc">${esc(DESC)}</p>
-  <div class="hero-actions">
-    <a class="btn-primary" href="installation.html">Get started</a>
-    <a class="btn-outline" href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
+  return `<header class="home-hero">
+  <p class="eyebrow">HTTP/HTTPS Proxy · NTLM · Kerberos</p>
+  <h1>${TOOL}</h1>
+  <p class="lede">${esc(HERO_COPY)}</p>
+  <div class="home-cta">
+    <a class="btn btn-primary" href="installation.html">Get started</a>
+    <a class="btn btn-ghost" href="configuration.html">Configuration</a>
+    <div class="home-install" aria-label="Build and run pxgo">
+      <span class="prompt" aria-hidden="true">$</span>
+      <code>${esc(INSTALL_CMD)}</code>
+      <button class="install-copy" type="button" data-copy="${esc(INSTALL_CMD)}">Copy</button>
+    </div>
   </div>
-  <div class="code-wrap" style="width:fit-content"><pre style="padding-right:4.5rem"><code>brew install ${TOOL}</code></pre>
-<button class="copy-btn">Copy</button></div>
+  <p class="muted">Go 1.24+ • local default 127.0.0.1:3128 • Docker-ready runtime</p>
+</header>`;
+}
+
+function featureGridHtml() {
+  const cards = [
+    ["↔", "HTTP and CONNECT", "Proxies HTTP traffic and HTTPS tunnels through direct, manual, PAC, or system proxy routes."],
+    ["🔐", "Enterprise auth", "Supports NTLM, Negotiate, Digest, Basic, Kerberos ticket refresh, and optional local client auth."],
+    ["🧭", "PAC and bypass rules", "Loads local or remote PAC files and applies host, suffix, CIDR, range, and wildcard bypass rules."],
+    ["🪟", "Windows startup", "Builds install and uninstall commands for Windows startup while keeping other platforms explicit."],
+    ["📦", "Single Go binary", "Runs as a compact CLI, Docker image, or locally built executable with no Python runtime required."],
+    ["✅", "Race-tested core", "Proxy state, Kerberos renewal, config parsing, PAC helpers, and bypass behavior have focused Go tests."],
+  ];
+  return `<section class="features-grid" aria-label="pxgo capabilities">
+${cards.map(([icon,title,text]) => `  <article class="feature-card">
+    <div class="feature-icon" aria-hidden="true">${icon}</div>
+    <h3>${esc(title)}</h3>
+    <p>${esc(text)}</p>
+  </article>`).join("\n")}
 </section>`;
 }
 
@@ -294,265 +354,213 @@ function renderPage({slug, title, bodyHtml, toc, pages, isIndex}) {
 <meta property="og:description" content="${esc(DESC)}">
 <meta property="og:url" content="${SITE_BASE}/${slug === "index" ? "" : slug + ".html"}">
 <meta name="twitter:card" content="summary">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* ── Reset + tokens ─────────────────────────────────── */
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+*,*::before,*::after{box-sizing:border-box}
 :root{
   --sidebar-w:280px;
   --font-sans:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:"JetBrains Mono","SF Mono",ui-monospace,monospace;
+  --coral:#ff6b4a;--coral-dark:#df5034;--coral-light:#ff9a7d;
+  --teal:#269d90;--teal-deep:#17786f;--teal-light:#47c2b1;
+  --gold:#f4b24f;--shell:#fff4ed;
+  --hl-keyword:#6bb6ff;--hl-string:#52b788;--hl-number:#ffb86c;
+  --hl-comment:#7c8597;--hl-flag:#c084fc;
 }
-[data-theme=dark]{
-  --bg:#0a0e16;--paper:#141a26;--surface2:#1a212d;
-  --line:#232a38;--line-soft:#1a212d;
-  --ink:#f1f5f9;--text:#cbd2dc;--muted:#8d96a4;--subtle:#5d6371;
-  --accent:#3b82f6;--accent-soft:rgba(59,130,246,.16);--accent-strong:#60a5fa;
-  --code-bg:#04080f;--code-fg:#e6edf3;--code-border:#1f2937;
+html[data-theme=light]{
+  --bg:#fff9f4;--paper:#ffffff;--surface:#fff2e9;--surface2:#f7eadf;
+  --line:#eaded4;--line-soft:#f5ece4;
+  --ink:#0b1729;--text:#2c3c4e;--muted:#6c7888;--subtle:#98a2af;
+  --accent:var(--coral);--accent-soft:rgba(255,107,74,.11);--accent-strong:var(--coral-dark);
+  --secondary:var(--teal);--code-bg:#0f1d2f;--code-fg:#e6f1f5;--code-border:#1f2937;
+  --shadow-card:0 4px 16px rgba(255,107,74,.12);--shadow-float:0 12px 32px rgba(38,157,144,.18);
 }
-[data-theme=light]{
-  --bg:#fafbfc;--paper:#ffffff;--surface2:#eef1f5;
-  --line:#e3e7ec;--line-soft:#eef1f5;
-  --ink:#0f172a;--text:#1f2937;--muted:#5b6470;--subtle:#9aa3b2;
-  --accent:#1d4ed8;--accent-soft:rgba(29,78,216,.10);--accent-strong:#1e3a8a;
-  --code-bg:#0a1322;--code-fg:#e6edf3;--code-border:#1f2937;
+html[data-theme=dark]{
+  --bg:#0a1018;--paper:#141b28;--surface:#1a2333;--surface2:#151e2d;
+  --line:#1f2937;--line-soft:#182234;
+  --ink:#f3f5f9;--text:#cbd2dc;--muted:#8d96a4;--subtle:#5d6371;
+  --accent:#ff8a6d;--accent-soft:rgba(255,138,109,.18);--accent-strong:#ffb4a2;
+  --secondary:var(--teal-light);--code-bg:#050a12;--code-fg:#e6f1f5;--code-border:#1a2333;
+  --shadow-card:0 6px 20px rgba(0,0,0,.42);--shadow-float:0 12px 32px rgba(0,0,0,.55);
 }
-
-/* ── Base ───────────────────────────────────────────── */
-html{scroll-behavior:smooth;font-size:16px}
+html{scroll-behavior:smooth;scroll-padding-top:24px;font-size:16px}
 body{
-  background:var(--bg);color:var(--text);
-  font:1rem/1.65 var(--font-sans);min-height:100vh;
-  transition:background-color .18s,color .18s;
+  margin:0;background:var(--bg);color:var(--text);
+  font:1rem/1.65 var(--font-sans);min-height:100vh;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;font-feature-settings:"cv02","cv03","cv04","cv11";
+  transition:background-color .25s,color .25s;
 }
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
+::selection{background:var(--accent);color:#fff}
+a{color:var(--accent);text-decoration:none;transition:color .15s}
+a:hover{text-decoration:underline;text-underline-offset:.2em}
 img{max-width:100%}
-hr{border:none;border-top:1px solid var(--line);margin:2rem 0}
-
-/* ── Shell grid ─────────────────────────────────────── */
-.shell{
-  display:grid;
-  grid-template-columns:var(--sidebar-w) minmax(0,1fr);
-  min-height:100vh;
-}
-
-/* ── Sidebar ────────────────────────────────────────── */
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.shell{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr);min-height:100vh}
 .sidebar{
-  position:sticky;top:0;height:100vh;overflow-y:auto;
-  background:var(--paper);border-right:1px solid var(--line);
-  padding:24px 22px;
-  display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;overflow:auto;padding:28px 24px;
+  background:var(--paper);border-right:2px solid var(--line);
   scrollbar-width:thin;scrollbar-color:var(--line) transparent;
+  transition:background-color .25s,border-color .25s;
 }
-.sidebar::-webkit-scrollbar{width:6px}
-.sidebar::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
-
-.sidebar-brand{margin-bottom:1.25rem}
-.brand-link{
-  display:flex;align-items:center;gap:10px;
-  font-weight:700;font-size:1.05rem;color:var(--ink);
+.sidebar::-webkit-scrollbar{width:6px}.sidebar::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
+.sidebar-head{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.brand-link{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none;flex:1;min-width:0}
+.brand-link:hover{text-decoration:none}.brand-mark{width:36px;height:36px;flex:0 0 36px}
+.brand-mark svg{width:100%;height:100%;display:block;filter:drop-shadow(0 4px 10px rgba(255,107,74,.16));transition:transform .25s ease}
+.brand-link:hover .brand-mark svg{transform:rotate(-4deg) scale(1.04)}
+.brand-link strong{display:block;font-size:1.1rem;line-height:1.1;font-weight:700;color:var(--ink)}
+.brand-link small{display:block;color:var(--muted);font-size:.75rem;margin-top:3px}
+.theme-toggle{
+  position:relative;display:inline-flex;align-items:center;justify-content:flex-start;
+  flex:0 0 auto;width:64px;height:32px;border-radius:16px;border:0;
+  background:linear-gradient(135deg,#ffd89b 0%,#ffb86c 100%);
+  cursor:pointer;padding:3px;box-shadow:inset 0 2px 6px rgba(0,0,0,.15),0 2px 8px rgba(255,107,74,.2);
+  transition:all .3s cubic-bezier(.4,0,.2,1);
 }
-.brand-link:hover{color:var(--accent);text-decoration:none}
-.brand-mark{
-  display:flex;align-items:center;justify-content:center;flex-shrink:0;
-  font-size:1.4rem;line-height:1;
+.theme-toggle::before{
+  content:"";position:absolute;inset:0;border-radius:16px;
+  background:linear-gradient(135deg,transparent 0%,rgba(255,255,255,.22) 50%,transparent 100%),
+    repeating-linear-gradient(90deg,transparent,transparent 3px,rgba(255,255,255,.12) 3px,rgba(255,255,255,.12) 6px);
+  background-size:auto,12px 100%;animation:tide 3s linear infinite;pointer-events:none;
 }
-
-.sidebar-nav{list-style:none;flex:1}
-.nav-group h2{
-  font-size:.68rem;font-weight:600;
-  text-transform:uppercase;letter-spacing:.06em;
-  color:var(--muted);margin:1.25rem 0 .3rem;padding:0 10px;
+@keyframes tide{to{background-position:0 0,12px 0}}
+html[data-theme=dark] .theme-toggle{background:linear-gradient(135deg,#1a3a52 0%,#2a4a62 100%);box-shadow:inset 0 2px 6px rgba(0,0,0,.4),0 2px 8px rgba(38,157,144,.24)}
+.theme-toggle-indicator{
+  position:absolute;left:3px;width:26px;height:26px;border-radius:50%;
+  background:linear-gradient(135deg,var(--coral) 0%,var(--coral-dark) 100%);
+  box-shadow:0 2px 4px rgba(0,0,0,.2),inset 0 1px 2px rgba(255,255,255,.3);
+  display:flex;align-items:center;justify-content:center;color:#fff;transition:all .3s cubic-bezier(.4,0,.2,1);
 }
-.nav-group:first-child h2{margin-top:.25rem}
+html[data-theme=dark] .theme-toggle-indicator{left:35px;background:linear-gradient(135deg,var(--teal-light) 0%,var(--teal) 100%)}
+.theme-toggle svg{width:14px;height:14px;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
+.theme-icon-moon{display:block}.theme-icon-sun{display:none}
+html[data-theme=dark] .theme-icon-moon{display:none}html[data-theme=dark] .theme-icon-sun{display:block}
+.theme-toggle:hover .theme-toggle-indicator{transform:scale(1.08)}
+.search{display:block;margin:0 0 24px}
+.search span,.toc-title,.nav-group h2{
+  display:block;color:var(--muted);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+}
+.search span{margin-bottom:8px}
+.search input{
+  width:100%;border:2px solid var(--line);background:var(--paper);border-radius:10px;
+  padding:10px 14px;font:inherit;font-size:.9rem;color:var(--text);outline:0;
+  transition:border-color .2s,box-shadow .2s,background-color .25s;
+}
+.search input:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.sidebar-nav{list-style:none;margin:0;padding:0;min-height:280px}
+.nav-group h2{margin:22px 0 8px}.nav-group:first-child h2{margin-top:0}
 .sidebar-nav a{
-  display:block;padding:5px 10px;margin:1px 0;
-  border-radius:6px;font-size:.9rem;line-height:1.4;
-  color:var(--text);transition:background .12s,color .12s;
+  display:block;color:var(--text);border-radius:8px;padding:7px 12px;margin:2px 0;
+  font-size:.9rem;line-height:1.4;transition:background .15s,color .15s;
 }
-.sidebar-nav a:hover{background:var(--line-soft);color:var(--ink);text-decoration:none}
-.sidebar-nav a.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
-
-.sidebar-footer{
-  margin-top:auto;padding-top:1rem;
-  border-top:1px solid var(--line);
-  display:flex;align-items:center;gap:.75rem;
-}
-.gh-link{
-  display:flex;align-items:center;gap:.4rem;
-  font-size:.8rem;color:var(--muted);flex:1;
-}
+.sidebar-nav a:hover{background:var(--accent-soft);color:var(--accent);text-decoration:none}
+.sidebar-nav a.active{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.sidebar-footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}
+.gh-link{display:flex;align-items:center;gap:.45rem;color:var(--muted);font-size:.86rem}
 .gh-link:hover{color:var(--text);text-decoration:none}
-.theme-btn{
-  background:none;border:1px solid var(--line);border-radius:8px;
-  cursor:pointer;padding:.3rem .5rem;color:var(--muted);font-size:.75rem;
-  display:flex;align-items:center;gap:.3rem;white-space:nowrap;
-  font-family:var(--font-sans);
-  transition:border-color .15s,color .15s;
-}
-.theme-btn:hover{color:var(--ink);border-color:var(--accent)}
-.icon-sun,.icon-moon{font-size:.85rem}
-[data-theme=dark]  .icon-moon{display:inline}[data-theme=dark]  .icon-sun{display:none}
-[data-theme=light] .icon-sun{display:inline}[data-theme=light] .icon-moon{display:none}
-
-/* ── Body column ────────────────────────────────────── */
-.body-col{display:flex;flex-direction:column;min-width:0}
-
-.mob-bar{
-  display:none;
-  position:sticky;top:0;z-index:100;
-  background:var(--paper);border-bottom:1px solid var(--line);
-  padding:.6rem 1rem;align-items:center;gap:.75rem;height:52px;
-}
-.mob-brand{font-weight:700;font-size:.95rem;color:var(--ink);flex:1}
-.mob-brand:hover{color:var(--accent);text-decoration:none}
-.hamburger{
-  background:none;border:none;cursor:pointer;
-  color:var(--muted);padding:.25rem;display:flex;
-}
-
-/* ── Main + ToC row ─────────────────────────────────── */
-.content-row{display:flex;flex:1;min-width:0}
-.main{
-  flex:1;min-width:0;
-  padding:32px clamp(20px,4.5vw,56px) 80px;
-}
-
-/* ── ToC ────────────────────────────────────────────── */
+.body-col{min-width:0}.mob-bar{display:none}
+.content-row{display:flex;min-width:0}.main{min-width:0;width:100%;max-width:1240px;margin:0 auto;padding:40px clamp(24px,5vw,64px) 96px}
+.doc{min-width:0;max-width:76ch;overflow-wrap:break-word}
 .toc{
-  width:210px;flex-shrink:0;
-  position:sticky;top:0;height:100vh;overflow-y:auto;
-  padding:32px 24px 32px 14px;
-  border-left:1px solid var(--line);
-  font-size:.84rem;
+  width:220px;flex:0 0 220px;position:sticky;top:0;height:100vh;overflow:auto;
+  padding:40px 24px 32px 14px;border-left:1px solid var(--line);font-size:.84rem;
 }
-.toc-title{
-  font-size:.68rem;font-weight:600;text-transform:uppercase;
-  letter-spacing:.06em;color:var(--muted);margin-bottom:.75rem;
-}
-.toc ul{list-style:none}
+.toc-title{margin:0 0 .75rem}.toc ul{list-style:none;margin:0;padding:0}
 .toc a{
-  display:block;padding:4px 0 4px 10px;
-  border-left:2px solid transparent;margin-left:-12px;
+  display:block;padding:4px 0 4px 10px;border-left:2px solid transparent;margin-left:-12px;
   color:var(--muted);transition:color .12s,border-color .12s;
 }
-.toc a:hover,.toc a.active{
-  color:var(--accent);border-left-color:var(--accent);text-decoration:none;
-}
+.toc a:hover,.toc a.active{color:var(--accent);border-left-color:var(--accent);text-decoration:none}
 .toc-3 a{padding-left:22px;font-size:.8rem}
-
-/* ── Hero ───────────────────────────────────────────── */
-.hero{
-  padding:14px 0 28px;
-  border-bottom:1px solid var(--line);
-  margin-bottom:2rem;
+.home-hero{
+  position:relative;padding:24px 0 40px;margin-bottom:12px;border-bottom:2px solid var(--line);
+  overflow:hidden;
 }
-.hero-eyebrow{
-  font-size:.7rem;font-weight:600;text-transform:uppercase;
-  letter-spacing:.08em;color:var(--accent);margin-bottom:.85rem;
+.home-hero::before{
+  content:"";position:absolute;top:-58%;right:-24%;width:62%;height:210%;
+  background:radial-gradient(circle,var(--accent-soft) 0%,transparent 68%);
+  opacity:.62;pointer-events:none;animation:floatGlow 18s ease-in-out infinite;
 }
-.hero-title{
-  font-size:clamp(2rem,4vw,3.1rem);font-weight:700;
-  letter-spacing:-.01em;line-height:1.04;
-  color:var(--ink);margin-bottom:.45rem;
+@keyframes floatGlow{50%{transform:translateY(-20px) rotate(4deg)}}
+.eyebrow{margin:0 0 10px;color:var(--secondary);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.home-hero h1{
+  margin:0 0 .35em;font-size:clamp(2.5rem,7vw,4.5rem);line-height:1.02;font-weight:800;
+  color:var(--ink);background:linear-gradient(135deg,var(--coral) 0%,var(--teal) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
 }
-.hero-desc{
-  font-size:1.1rem;color:var(--text);
-  max-width:62ch;margin-bottom:1.5rem;line-height:1.55;
+.lede{font-size:1.22rem;line-height:1.6;color:var(--text);margin:0 0 1.4em;max-width:66ch}
+.home-cta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:0 0 24px}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:12px 20px;
+  font-weight:700;font-size:.95rem;text-decoration:none;transition:all .2s;box-shadow:var(--shadow-card);
 }
-.hero-actions{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.5rem}
-.btn-primary{
-  display:inline-flex;align-items:center;gap:7px;
-  background:var(--accent);border:1px solid var(--accent);
-  color:#fff;font-weight:600;padding:10px 18px;
-  border-radius:8px;font-size:.92rem;
-  transition:opacity .15s;
+.btn-primary{background:linear-gradient(135deg,var(--coral) 0%,var(--coral-dark) 100%);color:#fff;border:2px solid var(--coral)}
+.btn-primary:hover{background:var(--coral-dark);transform:translateY(-2px);box-shadow:var(--shadow-float);text-decoration:none}
+.btn-ghost{background:var(--paper);color:var(--text);border:2px solid var(--line)}
+.btn-ghost:hover{border-color:var(--secondary);color:var(--secondary);text-decoration:none}
+.home-install{
+  display:flex;align-items:center;gap:12px;background:var(--code-bg);color:var(--code-fg);
+  border-radius:10px;padding:10px 10px 10px 16px;border:2px solid var(--code-border);
+  box-shadow:var(--shadow-card);font:500 .9rem/1.3 var(--font-mono);max-width:min(100%,38rem);
 }
-[data-theme=dark] .btn-primary{color:#fff}
-.btn-primary:hover{opacity:.85;text-decoration:none}
-.btn-outline{
-  display:inline-flex;align-items:center;gap:7px;
-  border:1px solid var(--line);color:var(--text);
-  padding:10px 18px;border-radius:8px;font-size:.92rem;font-weight:500;
-  transition:border-color .15s,color .15s;
+.home-install .prompt{color:var(--hl-comment);user-select:none;flex:0 0 auto}
+.home-install code{background:transparent;border:0;color:var(--code-fg);font:inherit;padding:0;white-space:pre;overflow:hidden;text-overflow:ellipsis}
+.install-copy{
+  border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#d9e2ec;
+  border-radius:7px;padding:6px 10px;font:700 .72rem/1 var(--font-sans);cursor:pointer;
 }
-.btn-outline:hover{border-color:var(--accent);color:var(--ink);text-decoration:none}
-
-/* ── Typography ─────────────────────────────────────── */
-.main h1{font-size:2.5rem;font-weight:700;line-height:1.08;color:var(--ink);margin-bottom:1rem;letter-spacing:-.02em}
-.main h2{font-size:1.4rem;font-weight:600;line-height:1.2;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:.4rem;margin:2.5rem 0 1rem;scroll-margin-top:24px}
-.main h3{font-size:1.08rem;font-weight:600;color:var(--ink);margin:2rem 0 .6rem;scroll-margin-top:24px}
-.main h4{font-size:.96rem;font-weight:600;color:var(--muted);margin:1.5rem 0 .5rem;scroll-margin-top:24px}
-.main p{margin-bottom:1.05em}
-.main ul,.main ol{padding-left:1.4rem;margin-bottom:1em}
-.main li{margin-bottom:.3rem}
-.main blockquote{
-  border-left:3px solid var(--accent);background:var(--accent-soft);
-  padding:10px 16px;border-radius:0 8px 8px 0;margin:1.4em 0;color:var(--text);
+.install-copy:hover{background:rgba(255,255,255,.16)}
+.muted{color:var(--muted);font-size:.92rem}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin:28px 0 34px}
+.feature-card{
+  background:var(--paper);border:2px solid var(--line);border-radius:12px;padding:24px;
+  transition:all .22s;box-shadow:var(--shadow-card);
 }
-.anchor{opacity:0;font-size:.8em;color:var(--muted);margin-right:.4rem;text-decoration:none}
-h2:hover .anchor,h3:hover .anchor{opacity:1}
-
-/* ── Inline code ────────────────────────────────────── */
+.feature-card:hover{border-color:var(--accent);transform:translateY(-4px);box-shadow:var(--shadow-float)}
+.feature-icon{
+  width:48px;height:48px;background:var(--accent-soft);border-radius:10px;display:flex;
+  align-items:center;justify-content:center;margin-bottom:16px;font-size:1.4rem;color:var(--accent);
+}
+.feature-card h3{font-size:1.1rem;margin:0 0 8px;color:var(--ink);font-weight:700}
+.feature-card p{margin:0;color:var(--muted);font-size:.92rem;line-height:1.5}
+.main h1{font-size:2.5rem;font-weight:800;line-height:1.08;color:var(--ink);margin:0 0 1rem}
+.main h2{font-size:1.6rem;line-height:1.2;margin:2.2em 0 .65em;font-weight:800;color:var(--ink);scroll-margin-top:24px}
+.main h3{font-size:1.2rem;margin:1.8em 0 .45em;font-weight:700;color:var(--ink);scroll-margin-top:24px}
+.main h4{font-size:1rem;margin:1.5em 0 .45em;font-weight:700;color:var(--muted);scroll-margin-top:24px}
+.main p{margin:0 0 1.15em;line-height:1.7}.main ul,.main ol{padding-left:1.4rem;margin:0 0 1.2em}.main li{margin:.3em 0;line-height:1.7}
+.main blockquote{border-left:4px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:1.5em 0}
+.anchor{opacity:0;font-size:.8em;color:var(--muted);margin-right:.4rem;text-decoration:none}.main h2:hover .anchor,.main h3:hover .anchor{opacity:1}
 code{
-  background:var(--surface2);border-radius:5px;
-  padding:.15em .4em;font-family:var(--font-mono);font-size:.84em;
+  font-family:var(--font-mono);font-size:.87em;background:var(--accent-soft);border:1px solid var(--line);
+  border-radius:6px;padding:.1em .4em;color:var(--accent-strong);font-weight:500;
 }
-
-/* ── Code blocks ────────────────────────────────────── */
-.code-wrap{position:relative;margin:1.25rem 0}
+html[data-theme=dark] code{color:#ffb4a2}
+.code-wrap{position:relative;margin:1.5em 0}
 pre{
-  background:var(--code-bg);border:1px solid var(--code-border);
-  border-radius:8px;padding:14px 18px;
-  overflow-x:auto;font-family:var(--font-mono);font-size:.85rem;line-height:1.6;
-  color:var(--code-fg);
-  scrollbar-width:thin;scrollbar-color:#334155 transparent;
+  overflow:auto;background:var(--code-bg);color:var(--code-fg);border-radius:10px;
+  padding:18px 20px;margin:0;font:400 .88rem/1.65 var(--font-mono);
+  border:2px solid var(--code-border);box-shadow:var(--shadow-card);scrollbar-width:thin;scrollbar-color:#334155 transparent;
 }
-pre code{background:none;border:none;padding:0;font-size:inherit;color:inherit}
+pre code{display:block;background:transparent;border:0;color:inherit;padding:0;font:inherit;white-space:pre}
 .copy-btn{
-  position:absolute;top:.5rem;right:.5rem;
-  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);
-  color:#8d96a4;font-size:.72rem;padding:5px 11px;border-radius:6px;
-  cursor:pointer;font:500 .72rem/1 var(--font-sans);
-  transition:background .12s,color .12s;
+  position:absolute;top:.65rem;right:.65rem;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.16);color:#d9e2ec;border-radius:7px;
+  padding:6px 10px;font:700 .72rem/1 var(--font-sans);cursor:pointer;transition:background .12s,color .12s;
 }
-.copy-btn:hover{background:rgba(255,255,255,.16);color:#e6edf3}
-.copy-btn.ok{background:var(--accent);border-color:var(--accent);color:#fff}
-
-/* ── Syntax highlight tokens ────────────────────────── */
-.hk{color:#e387cb}
-.hs{color:#a8e0a3}
-.hn{color:#f6c177}
-.hc{color:#7c8597;font-style:italic}
-.hf{color:#fcd28a}
-
-/* ── Tables ─────────────────────────────────────────── */
-table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}
-th{
-  background:var(--line-soft);text-align:left;
-  padding:9px 10px;border-bottom:1px solid var(--line);
-  font-size:.8rem;font-weight:600;text-transform:uppercase;
-  letter-spacing:.04em;color:var(--muted);
-}
-td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-td code{font-size:.8em}
-
-/* ── Responsive ─────────────────────────────────────── */
-@media(max-width:1200px){.toc{display:none}}
+.copy-btn:hover{background:rgba(255,255,255,.16)}.copy-btn.ok,.install-copy.ok{background:var(--accent);border-color:var(--accent);color:#fff}
+.hk{color:var(--hl-keyword);font-weight:700}.hs{color:var(--hl-string)}.hn{color:var(--hl-number)}.hc{color:var(--hl-comment);font-style:italic}.hf{color:var(--hl-flag)}
+table{width:100%;border-collapse:separate;border-spacing:0;margin:1.4em 0;font-size:.92rem;overflow:hidden;border:1px solid var(--line);border-radius:10px}
+th{background:var(--line-soft);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td code{font-size:.82em}
+@media(max-width:1200px){.toc{display:none}.main{max-width:980px}}
 @media(max-width:900px){
-  .shell{grid-template-columns:1fr}
-  .sidebar{
-    position:fixed;top:0;left:0;z-index:200;
-    height:100vh;width:var(--sidebar-w);
-    transform:translateX(-100%);transition:transform .22s ease;
-  }
-  .sidebar.open{transform:translateX(0)}
-  .mob-bar{display:flex}
-  .main{padding:20px 18px 56px}
+  .shell{display:block}.sidebar{position:static;height:auto;transform:none;box-shadow:none}
+  .mob-bar{display:none}.content-row{display:block}.main{padding:32px 20px 60px}.home-hero h1{font-size:2.7rem}
 }
+@media(max-width:560px){.home-install{flex-wrap:wrap}.home-install code{width:100%}.features-grid{grid-template-columns:1fr}.home-hero h1{font-size:2.25rem}}
 </style>
 </head>
 <body>
@@ -572,6 +580,7 @@ td code{font-size:.8em}
     <div class="content-row">
       <main class="main">
         ${hero}
+        ${isIndex ? featureGridHtml() : ""}
         ${bodyHtml}
       </main>
       ${tocBlock}
@@ -582,15 +591,14 @@ td code{font-size:.8em}
 <script>
 const root=document.documentElement;
 const btn=document.getElementById("themeBtn");
-const label=document.getElementById("themeLabel");
 const stored=localStorage.getItem("theme")||"dark";
 root.dataset.theme=stored;
-label.textContent=stored==="dark"?"Light":"Dark";
+btn && btn.setAttribute("aria-pressed", stored==="dark" ? "true" : "false");
 btn.addEventListener("click",()=>{
   const next=root.dataset.theme==="dark"?"light":"dark";
   root.dataset.theme=next;
   localStorage.setItem("theme",next);
-  label.textContent=next==="dark"?"Light":"Dark";
+  btn.setAttribute("aria-pressed", next==="dark" ? "true" : "false");
 });
 
 const ham=document.getElementById("ham");
@@ -611,6 +619,35 @@ document.querySelectorAll(".copy-btn").forEach(btn=>{
     });
   });
 });
+document.querySelectorAll(".install-copy").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+    navigator.clipboard.writeText(btn.dataset.copy||"").then(()=>{
+      btn.textContent="Copied";btn.classList.add("ok");
+      setTimeout(()=>{btn.textContent="Copy";btn.classList.remove("ok");},1600);
+    });
+  });
+});
+
+const search=document.getElementById("docSearch");
+if(search){
+  const links=[...document.querySelectorAll("[data-nav-item]")];
+  const groups=[...document.querySelectorAll("[data-nav-group]")];
+  search.addEventListener("input",()=>{
+    const q=search.value.trim().toLowerCase();
+    links.forEach(li=>{
+      const a=li.querySelector("a");
+      li.hidden=q && !a.dataset.searchText.toLowerCase().includes(q);
+    });
+    groups.forEach(group=>{
+      let next=group.nextElementSibling, any=false;
+      while(next && !next.matches("[data-nav-group]")){
+        if(!next.hidden) any=true;
+        next=next.nextElementSibling;
+      }
+      group.hidden=q && !any;
+    });
+  });
+}
 
 const tocLinks=[...document.querySelectorAll(".toc a")];
 if(tocLinks.length){
@@ -637,7 +674,6 @@ const sections = [
   ["Get Started",  ["index.md", "installation.md", "usage.md"]],
   ["Configuration",["configuration.md"]],
   ["Development",  ["architecture.md", "build.md", "testing.md"]],
-  ["Project",      ["changelog.md"]],
 ];
 
 const LABELS = {
@@ -648,7 +684,16 @@ const LABELS = {
   "architecture": "Architecture",
   "build":        "Build",
   "testing":      "Testing",
-  "changelog":    "Changelog",
+};
+
+const PAGE_KEYWORDS = {
+  "index": "overview proxy ntlm kerberos pac docker quick start",
+  "installation": "go build docker windows startup install path kerberos",
+  "usage": "basic proxy upstream pac bypass ntlm kerberos client authentication gateway logging self test",
+  "configuration": "px env ini config proxy client settings passwords kerberos pac noproxy",
+  "architecture": "runtime flow packages concurrency proxy pac kerberos system proxy windows startup",
+  "build": "local build cross compile docker image version",
+  "testing": "make test race detector coverage kerberos docker lint ci",
 };
 
 function fileToLabel(filename) {
@@ -682,6 +727,15 @@ for(const {slug,label,file} of pages) {
 }
 
 writeFileSync(join(OUT,".nojekyll"),"");
+writeFileSync(join(OUT,"favicon.svg"),`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs>
+<linearGradient id="a" x1="10" x2="54" y1="8" y2="56"><stop offset="0" stop-color="#ff8a6d"/><stop offset=".55" stop-color="#ff6b4a"/><stop offset="1" stop-color="#d9482e"/></linearGradient>
+<linearGradient id="b" x1="54" x2="10" y1="10" y2="58"><stop offset="0" stop-color="#47c2b1"/><stop offset="1" stop-color="#1f8f83"/></linearGradient>
+</defs>
+<rect x="8" y="9" width="48" height="46" rx="14" fill="url(#a)"/>
+<path d="M18 24h18c5.5 0 10 4.5 10 10s-4.5 10-10 10H18v-7h18a3 3 0 0 0 0-6H18z" fill="#fff" opacity=".94"/>
+<path d="M46 19l8 8-8 8v-6H29v-4h17zM18 45l-8-8 8-8v6h17v4H18z" fill="url(#b)"/>
+</svg>`);
 
 if(existsSync(join(SRC,"CNAME")))
   writeFileSync(join(OUT,"CNAME"),readFileSync(join(SRC,"CNAME")));
@@ -694,8 +748,7 @@ writeFileSync(join(OUT,"llms.txt"),
 ## Install
 
 \`\`\`bash
-brew tap ${BREW_TAP}
-brew install ${TOOL}
+${INSTALL_CMD}
 \`\`\`
 
 ## Source

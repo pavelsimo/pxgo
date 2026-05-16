@@ -1,4 +1,4 @@
-# pxgo
+# 🔀 pxgo
 
 [![CI](https://github.com/pavelsimo/pxgo/actions/workflows/ci.yml/badge.svg)](https://github.com/pavelsimo/pxgo/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pavelsimo/pxgo)](https://github.com/pavelsimo/pxgo/releases)
@@ -102,7 +102,6 @@ Use `pxgo --help` for the current CLI help.
 - [Architecture](docs/architecture.md)
 - [Build](docs/build.md)
 - [Testing](docs/testing.md)
-- [Changelog](docs/changelog.md)
 
 ## Docker
 
@@ -133,5 +132,3 @@ make fmt         # format code
 make ci          # full CI gate: fmt-check + lint + test + build
 make docs        # build docs site to dist/docs-site/
 ```
-
-The Python reference implementation remains in [px-python/](px-python/).
