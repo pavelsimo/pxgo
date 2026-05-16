@@ -110,7 +110,7 @@ func (d *Debug) Print(msg string) {
 		parts := strings.Split(fn.Name(), ".")
 		tree = append(tree, parts[len(parts)-1])
 	}
-	_, _ = d.Write([]byte(fmt.Sprintf("%d: /%s: %s\n", time.Now().Unix(), strings.Join(tree, "/"), msg)))
+	_, _ = fmt.Fprintf(d, "%d: /%s: %s\n", time.Now().Unix(), strings.Join(tree, "/"), msg)
 }
 
 func (d *Debug) GetPrint() func(string) {

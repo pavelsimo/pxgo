@@ -1,37 +1,49 @@
+version: "2"
 linters:
   enable:
-    - errcheck
-    - govet
-    - staticcheck
-    - gosec
-    - revive
-    - gocritic
-    - misspell
-    - unused
-    - gocyclo
-    - ineffassign
     - bodyclose
-    - nilerr
     - goconst
+    - gocritic
+    - gocyclo
+    - gosec
+    - misspell
+    - nilerr
     - prealloc
+    - revive
     - unparam
     - whitespace
-
-linters-settings:
-  gocyclo:
-    min-complexity: 50
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-  revive:
+  settings:
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocyclo:
+      min-complexity: 50
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        arguments:
-          - disableStutteringCheck
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+      - linters:
+          - errcheck
+          - goconst
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

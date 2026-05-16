@@ -344,6 +344,7 @@ func TestConnectIdleTimeoutClosesTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status=%s", resp.Status)
 	}
@@ -589,7 +590,7 @@ func TestClientDigestAuth(t *testing.T) {
 		t.Fatalf("missing digest challenge: %q", challenge)
 	}
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
-	req.Header.Set("Proxy-Authorization", digestAuthHeader("test", "12345", http.MethodGet, upstream.URL, digestNonceFromChallenge(t, challenge)))
+	req.Header.Set("Proxy-Authorization", digestAuthHeader(upstream.URL, digestNonceFromChallenge(t, challenge)))
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -618,7 +619,7 @@ func TestClientDigestAuthSchemeCaseInsensitive(t *testing.T) {
 	}
 	challenge := resp.Header.Get("Proxy-Authenticate")
 	_ = resp.Body.Close()
-	auth := digestAuthHeader("test", "12345", http.MethodGet, upstream.URL, digestNonceFromChallenge(t, challenge))
+	auth := digestAuthHeader(upstream.URL, digestNonceFromChallenge(t, challenge))
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
 	req.Header.Set("Proxy-Authorization", strings.Replace(auth, "Digest ", "digest ", 1))
 	resp, err = client.Do(req)
@@ -644,7 +645,7 @@ func TestClientDigestRejectsBadNonce(t *testing.T) {
 	px := startTestProxy(t, cfg)
 	client := proxyClient(t, px.Port())
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
-	req.Header.Set("Proxy-Authorization", digestAuthHeader("test", "12345", http.MethodGet, upstream.URL, "bad-nonce"))
+	req.Header.Set("Proxy-Authorization", digestAuthHeader(upstream.URL, "bad-nonce"))
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -995,7 +996,7 @@ func TestClientCommaAuthChallengesAndAcceptsDigest(t *testing.T) {
 		}
 	}
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
-	req.Header.Set("Proxy-Authorization", digestAuthHeader("test", "12345", http.MethodGet, upstream.URL, digestNonceFromChallenge(t, challenge)))
+	req.Header.Set("Proxy-Authorization", digestAuthHeader(upstream.URL, digestNonceFromChallenge(t, challenge)))
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1482,6 +1483,7 @@ func runUpstreamConnectionAuthConnect(t *testing.T, scheme string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%s", resp.Status)
 	}
@@ -1533,6 +1535,7 @@ func runUpstreamSPNEGOAuthConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%s", resp.Status)
 	}
@@ -1763,7 +1766,10 @@ func TestQuitEndpointStopsProxy(t *testing.T) {
 	t.Fatal("proxy still accepts connections")
 }
 
-func digestAuthHeader(username, password, method, uri, nonce string) string {
+func digestAuthHeader(uri, nonce string) string {
+	username := "test"
+	password := "12345"
+	method := http.MethodGet
 	realm := "PxClient"
 	nc := "00000001"
 	cnonce := "abcdef"
@@ -1847,11 +1853,11 @@ func testKerberosManager(reloads *int) *kerberos.Manager {
 	mgr := kerberos.New("user@REALM", func() *string { return &password }, false)
 	mgr.NextCheck = time.Now().Add(time.Hour)
 	mgr.KinitWithPasswordFunc = func() bool {
-		*reloads = *reloads + 1
+		*reloads++
 		return true
 	}
 	mgr.KinitRenewFunc = func() bool {
-		*reloads = *reloads + 1
+		*reloads++
 		return true
 	}
 	mgr.KlistValidFunc = func() bool {
@@ -1864,11 +1870,11 @@ func TestLargeHTTPAndHTTPS(t *testing.T) {
 	payload := bytes.Repeat([]byte("PxLargeDataTest"), 160000)
 	want := sha256.Sum256(payload)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet:
+		switch r.Method {
+		case http.MethodGet:
 			w.Header().Set("X-SHA256", hex.EncodeToString(want[:]))
 			_, _ = w.Write(payload)
-		case r.Method == http.MethodPost:
+		case http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
 			got := sha256.Sum256(body)
 			fmt.Fprintf(w, `{"received":%d,"sha256":"%s"}`, len(body), hex.EncodeToString(got[:]))
@@ -1906,8 +1912,8 @@ func TestLargeHTTPAndHTTPS(t *testing.T) {
 
 func TestLargeDataMultipleSizes(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet:
+		switch r.Method {
+		case http.MethodGet:
 			size := 2 * 1024 * 1024
 			switch {
 			case strings.Contains(r.URL.Path, "20mb"):
@@ -1921,7 +1927,7 @@ func TestLargeDataMultipleSizes(t *testing.T) {
 			sum := sha256.Sum256(body)
 			w.Header().Set("X-SHA256", hex.EncodeToString(sum[:]))
 			_, _ = w.Write(body)
-		case r.Method == http.MethodPost:
+		case http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
 			sum := sha256.Sum256(body)
 			fmt.Fprintf(w, `{"received":%d,"sha256":"%s"}`, len(body), hex.EncodeToString(sum[:]))

@@ -23,7 +23,14 @@ const (
 	ModeConfigPAC
 )
 
-var Direct = Server{Host: "DIRECT", Port: 80, Scheme: "direct"}
+const (
+	directHost  = "DIRECT"
+	directKey   = "direct://DIRECT:80"
+	httpScheme  = "http"
+	httpsScheme = "https"
+)
+
+var Direct = Server{Host: directHost, Port: 80, Scheme: "direct"}
 
 type Server struct {
 	Host   string
@@ -106,15 +113,15 @@ func ParseProxy(proxystrs string) ([]Server, error) {
 		if proxystr == "" {
 			continue
 		}
-		if strings.EqualFold(proxystr, "DIRECT") {
-			if !seen["direct://DIRECT:80"] {
+		if strings.EqualFold(proxystr, directHost) {
+			if !seen[directKey] {
 				servers = append(servers, Direct)
-				seen["direct://DIRECT:80"] = true
+				seen[directKey] = true
 			}
 			continue
 		}
 		host := proxystr
-		scheme := "http"
+		scheme := httpScheme
 		port := 80
 		if strings.Contains(proxystr, "://") {
 			u, err := url.Parse(proxystr)
@@ -125,14 +132,15 @@ func ParseProxy(proxystrs string) ([]Server, error) {
 				scheme = strings.ToLower(u.Scheme)
 			}
 			host = u.Hostname()
-			if u.Port() != "" {
+			switch {
+			case u.Port() != "":
 				port, err = strconv.Atoi(u.Port())
 				if err != nil {
-					return nil, fmt.Errorf("Bad proxy server port: %s", u.Port())
+					return nil, fmt.Errorf("bad proxy server port: %s", u.Port())
 				}
-			} else if scheme == "https" {
+			case scheme == httpsScheme:
 				port = 443
-			} else if strings.HasPrefix(scheme, "socks") {
+			case strings.HasPrefix(scheme, "socks"):
 				port = 1080
 			}
 		} else if h, p, ok := strings.Cut(proxystr, ":"); ok {
@@ -140,7 +148,7 @@ func ParseProxy(proxystrs string) ([]Server, error) {
 			host = strings.TrimSpace(h)
 			port, err = strconv.Atoi(strings.TrimSpace(p))
 			if err != nil {
-				return nil, fmt.Errorf("Bad proxy server port: %s", p)
+				return nil, fmt.Errorf("bad proxy server port: %s", p)
 			}
 		}
 		key := fmt.Sprintf("%s://%s:%d", scheme, host, port)
@@ -237,14 +245,15 @@ func New(mode int, servers []Server, noproxy, pacEncoding string) (*Wproxy, erro
 	}
 	if mode == ModeNone {
 		sysproxy := systemproxy.Discover()
-		if sysproxy.Found && sysproxy.AutoDetect {
+		switch {
+		case sysproxy.Found && sysproxy.AutoDetect:
 			w.Mode = ModeAuto
 			mergeNoProxy(w, sysproxy.Bypass)
-		} else if sysproxy.Found && sysproxy.IsPAC {
+		case sysproxy.Found && sysproxy.IsPAC:
 			w.Mode = ModePAC
 			w.Servers = []Server{{Host: sysproxy.PACURL, Scheme: "pac"}}
 			mergeNoProxy(w, sysproxy.Bypass)
-		} else if sysproxy.Found {
+		case sysproxy.Found:
 			parsed, err := ParseProxy(sysproxy.ManualProxy)
 			if err != nil {
 				return nil, err
@@ -308,7 +317,7 @@ func (w *Wproxy) GetNetloc(rawurl string) (Server, string, error) {
 		if h, p, ok := strings.Cut(rawurl, ":"); ok {
 			parsed, err := strconv.Atoi(p)
 			if err != nil {
-				return Server{}, "", fmt.Errorf("Bad target port: %s", p)
+				return Server{}, "", fmt.Errorf("bad target port: %s", p)
 			}
 			host = h
 			port = parsed
@@ -328,7 +337,7 @@ func (w *Wproxy) GetNetloc(rawurl string) (Server, string, error) {
 		port, _ = strconv.Atoi(u.Port())
 	} else {
 		switch u.Scheme {
-		case "https":
+		case httpsScheme:
 			port = 443
 		case "ftp":
 			port = 21
@@ -359,28 +368,28 @@ func (w *Wproxy) FindProxyForURL(rawurl string) ([]Server, Server, string, error
 	}
 	if w.Mode == ModeConfigPAC && w.PAC != nil {
 		out := w.PAC.FindProxyForURL(rawurl, netloc.Host)
-		servers, err := ParseProxy(out)
-		if err != nil {
-			return []Server{Direct}, netloc, path, nil
-		}
-		return servers, netloc, path, nil
+		return parseProxyOrDirect(out), netloc, path, nil
 	}
 	if w.Mode == ModeAuto || w.Mode == ModePAC {
 		cfg := systemproxy.Config{AutoDetect: w.Mode == ModeAuto, IsPAC: w.Mode == ModePAC}
 		if w.Mode == ModePAC && len(w.Servers) > 0 {
 			cfg.PACURL = w.Servers[0].Host
 		}
-		out, err := systemproxy.ResolveProxyForURL(rawurl, cfg)
-		if err != nil || strings.TrimSpace(out) == "" {
+		out, _ := systemproxy.ResolveProxyForURL(rawurl, cfg)
+		if strings.TrimSpace(out) == "" {
 			return []Server{Direct}, netloc, path, nil
 		}
-		servers, err := ParseProxy(out)
-		if err != nil {
-			return []Server{Direct}, netloc, path, nil
-		}
-		return servers, netloc, path, nil
+		return parseProxyOrDirect(out), netloc, path, nil
 	}
 	return append([]Server(nil), w.Servers...), netloc, path, nil
+}
+
+func parseProxyOrDirect(proxy string) []Server {
+	servers, err := ParseProxy(proxy)
+	if err != nil {
+		return []Server{Direct}
+	}
+	return servers
 }
 
 func (w *Wproxy) isNoProxy(netloc Server) bool {

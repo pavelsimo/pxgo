@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- Digest and NTLM compatibility require MD5.
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -26,14 +26,29 @@ import (
 	"unicode/utf16"
 
 	"github.com/Azure/go-ntlmssp"
-	"golang.org/x/crypto/md4"
+	"golang.org/x/crypto/md4" //nolint:staticcheck,gosec // NTLM compatibility requires MD4.
 
 	"github.com/pavelsimo/pxgo/internal/config"
 	"github.com/pavelsimo/pxgo/internal/kerberos"
 	"github.com/pavelsimo/pxgo/internal/wproxy"
 )
 
-const digestRealm = "PxClient"
+const (
+	digestRealm      = "PxClient"
+	authAny          = "ANY"
+	authAnySafe      = "ANYSAFE"
+	authBasic        = "BASIC"
+	authDigest       = "DIGEST"
+	authNegotiate    = "NEGOTIATE"
+	authNone         = "NONE"
+	authNTLM         = "NTLM"
+	authSchemeBasic  = "Basic"
+	authSchemeDigest = "Digest"
+	authSchemeNeg    = "Negotiate"
+	digestQopAuth    = "auth"
+	httpScheme       = "http"
+	httpsScheme      = "https"
+)
 
 type Server struct {
 	cfg        config.Config
@@ -404,23 +419,23 @@ func (s *Server) clearClientState(remoteAddr string) {
 func (s *Server) checkClientAuth(req *http.Request) bool {
 	for _, auth := range clientAuthMethods(s.cfg.ClientAuth) {
 		switch auth {
-		case "BASIC":
+		case authBasic:
 			if s.checkBasicClientAuth(req) {
 				return true
 			}
-		case "DIGEST":
+		case authDigest:
 			if s.checkDigestClientAuth(req) {
 				return true
 			}
-		case "NTLM":
-			if s.checkNTLMClientAuth(req, "NTLM") {
+		case authNTLM:
+			if s.checkNTLMClientAuth(req, authNTLM) {
 				return true
 			}
-		case "NEGOTIATE":
+		case authNegotiate:
 			// Full SPNEGO/GSS-API validation is platform-specific. Accept raw
 			// NTLMSSP tokens carried under Negotiate when explicit client
 			// credentials are configured.
-			if s.checkNTLMClientAuth(req, "Negotiate") {
+			if s.checkNTLMClientAuth(req, authSchemeNeg) {
 				return true
 			}
 		}
@@ -431,7 +446,7 @@ func (s *Server) checkClientAuth(req *http.Request) bool {
 func (s *Server) checkBasicClientAuth(req *http.Request) bool {
 	h := req.Header.Get("Proxy-Authorization")
 	scheme, token, ok := strings.Cut(h, " ")
-	if !ok || !strings.EqualFold(scheme, "Basic") {
+	if !ok || !strings.EqualFold(scheme, authSchemeBasic) {
 		return false
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(token))
@@ -448,7 +463,7 @@ func (s *Server) checkBasicClientAuth(req *http.Request) bool {
 func (s *Server) checkDigestClientAuth(req *http.Request) bool {
 	h := req.Header.Get("Proxy-Authorization")
 	scheme, token, ok := strings.Cut(h, " ")
-	if !ok || !strings.EqualFold(scheme, "Digest") {
+	if !ok || !strings.EqualFold(scheme, authSchemeDigest) {
 		return false
 	}
 	params := parseAuthParams(strings.TrimSpace(token))
@@ -488,7 +503,7 @@ func (s *Server) checkNTLMClientAuth(req *http.Request, expectedScheme string) b
 		return false
 	}
 	usesSPNEGO := false
-	if strings.EqualFold(expectedScheme, "Negotiate") && !isNTLMSSP(raw) {
+	if strings.EqualFold(expectedScheme, authSchemeNeg) && !isNTLMSSP(raw) {
 		unwrapped, ok := unwrapSPNEGONTLMToken(raw)
 		if !ok {
 			return false
@@ -524,25 +539,25 @@ func (s *Server) clientAuthChallenges(req *http.Request) []string {
 	var challenges []string
 	for _, auth := range clientAuthMethods(s.cfg.ClientAuth) {
 		switch auth {
-		case "NEGOTIATE":
+		case authNegotiate:
 			if challenge := s.ntlmChallenge(req.RemoteAddr); len(challenge) != 0 {
 				if s.ntlmChallengeUsesSPNEGO(req.RemoteAddr) {
 					challenge = spnegoNegTokenResp(challenge)
 				}
-				challenges = append(challenges, `Negotiate `+base64.StdEncoding.EncodeToString(challenge))
+				challenges = append(challenges, authSchemeNeg+" "+base64.StdEncoding.EncodeToString(challenge))
 			} else {
-				challenges = append(challenges, `Negotiate`)
+				challenges = append(challenges, authSchemeNeg)
 			}
-		case "NTLM":
+		case authNTLM:
 			if challenge := s.ntlmChallenge(req.RemoteAddr); len(challenge) != 0 {
-				challenges = append(challenges, `NTLM `+base64.StdEncoding.EncodeToString(challenge))
+				challenges = append(challenges, authNTLM+" "+base64.StdEncoding.EncodeToString(challenge))
 			} else {
-				challenges = append(challenges, `NTLM`)
+				challenges = append(challenges, authNTLM)
 			}
-		case "DIGEST":
-			challenges = append(challenges, `Digest realm="`+digestRealm+`", nonce="`+digestNonce(req.RemoteAddr)+`", qop="auth", algorithm="MD5"`)
-		case "BASIC":
-			challenges = append(challenges, `Basic realm="`+digestRealm+`"`)
+		case authDigest:
+			challenges = append(challenges, authSchemeDigest+` realm="`+digestRealm+`", nonce="`+digestNonce(req.RemoteAddr)+`", qop="auth", algorithm="MD5"`)
+		case authBasic:
+			challenges = append(challenges, authSchemeBasic+` realm="`+digestRealm+`"`)
 		}
 	}
 	return challenges
@@ -665,13 +680,17 @@ func readDERTLV(data []byte) (byte, []byte, []byte, bool) {
 }
 
 func derTLV(tag byte, content []byte) []byte {
-	out := []byte{tag}
+	out := make([]byte, 0, 1+len(content)+4)
+	out = append(out, tag)
 	out = append(out, derLength(len(content))...)
 	out = append(out, content...)
 	return out
 }
 
 func derLength(length int) []byte {
+	if length < 0 {
+		return nil
+	}
 	if length < 0x80 {
 		return []byte{byte(length)}
 	}
@@ -681,7 +700,8 @@ func derLength(length int) []byte {
 		i--
 		buf[i] = byte(n)
 	}
-	out := []byte{0x80 | byte(len(buf)-i)}
+	out := make([]byte, 0, 1+len(buf)-i)
+	out = append(out, 0x80|byte(len(buf)-i))
 	out = append(out, buf[i:]...)
 	return out
 }
@@ -807,7 +827,7 @@ func splitConfiguredNTLMName(username string) (user, domain string) {
 }
 
 func ntlmHash(password string) []byte {
-	h := md4.New()
+	h := md4.New() // #nosec G406 -- NTLM uses MD4 by protocol design.
 	_, _ = h.Write(utf16le(password))
 	return h.Sum(nil)
 }
@@ -864,12 +884,12 @@ func clientAuthMethods(auth string) []string {
 		switch method {
 		case "":
 			continue
-		case "NONE":
+		case authNone:
 			return nil
-		case "ANY":
-			return []string{"NEGOTIATE", "NTLM", "DIGEST", "BASIC"}
-		case "ANYSAFE":
-			return []string{"NEGOTIATE", "NTLM", "DIGEST"}
+		case authAny:
+			return []string{authNegotiate, authNTLM, authDigest, authBasic}
+		case authAnySafe:
+			return []string{authNegotiate, authNTLM, authDigest}
 		default:
 			methods = append(methods, method)
 		}
@@ -879,7 +899,7 @@ func clientAuthMethods(auth string) []string {
 
 func isSupportedClientAuth(auth string) bool {
 	switch auth {
-	case "NEGOTIATE", "NTLM", "DIGEST", "BASIC":
+	case authNegotiate, authNTLM, authDigest, authBasic:
 		return true
 	default:
 		return false
@@ -955,7 +975,7 @@ func splitAuthParams(header string) []string {
 }
 
 func md5hex(s string) string {
-	sum := md5.Sum([]byte(s))
+	sum := md5.Sum([]byte(s)) // #nosec G401 -- HTTP Digest uses MD5 by protocol design.
 	return hex.EncodeToString(sum[:])
 }
 
@@ -973,7 +993,7 @@ func subtleEqualHex(a, b string) bool {
 func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 	targetURL := req.URL.String()
 	if !req.URL.IsAbs() {
-		scheme := "http"
+		scheme := httpScheme
 		targetURL = scheme + "://" + req.Host + req.URL.RequestURI()
 	}
 	proxies, _, _, err := s.currentWproxy().FindProxyForURL(targetURL)
@@ -1151,11 +1171,11 @@ func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, prox
 		var upstream net.Conn
 		var err error
 		if p == wproxy.Direct {
-			upstream, err = net.DialTimeout("tcp", target, timeout)
+			upstream, err = net.DialTimeout("tcp", target, timeout) // #nosec G704 -- this proxy must dial client-requested CONNECT targets.
 		} else {
-			addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
+			addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
 			switch scheme := proxyScheme(p); {
-			case scheme == "https":
+			case scheme == httpsScheme:
 				upstream, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, &tls.Config{ServerName: p.Host})
 				if err == nil {
 					err = s.sendUpstreamConnect(upstream, target, incomingProxyAuth)
@@ -1187,7 +1207,7 @@ func (s *Server) forceKerberosReloadForUpstreamAuth(resp *http.Response) {
 	if s.krb == nil || resp == nil || resp.StatusCode != http.StatusProxyAuthRequired {
 		return
 	}
-	if findProxyAuthenticateChallenge(resp.Header.Values("Proxy-Authenticate"), "NEGOTIATE") == "" {
+	if findProxyAuthenticateChallenge(resp.Header.Values("Proxy-Authenticate"), authNegotiate) == "" {
 		return
 	}
 	s.reloadKerberos(true)
@@ -1195,7 +1215,7 @@ func (s *Server) forceKerberosReloadForUpstreamAuth(resp *http.Response) {
 
 func proxyScheme(server wproxy.Server) string {
 	if server.Scheme == "" {
-		return "http"
+		return httpScheme
 	}
 	return server.Scheme
 }
@@ -1240,6 +1260,10 @@ func dialSOCKS5(ctx context.Context, proxyAddr, target string, timeout time.Dura
 	if err != nil {
 		return nil, err
 	}
+	port16, err := socksPort(port)
+	if err != nil {
+		return nil, err
+	}
 	req := []byte{0x05, 0x01, 0x00}
 	if ip := net.ParseIP(host); ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
@@ -1253,10 +1277,14 @@ func dialSOCKS5(ctx context.Context, proxyAddr, target string, timeout time.Dura
 		if len(host) > 255 {
 			return nil, fmt.Errorf("SOCKS5 target host too long")
 		}
-		req = append(req, 0x03, byte(len(host)))
+		hostLen, err := socksHostLen(host)
+		if err != nil {
+			return nil, err
+		}
+		req = append(req, 0x03, hostLen)
 		req = append(req, host...)
 	}
-	req = binary.BigEndian.AppendUint16(req, uint16(port))
+	req = binary.BigEndian.AppendUint16(req, port16)
 	if _, err := conn.Write(req); err != nil {
 		return nil, err
 	}
@@ -1311,8 +1339,12 @@ func dialSOCKS4(ctx context.Context, proxyAddr, target string, timeout time.Dura
 	if err != nil {
 		return nil, err
 	}
+	port16, err := socksPort(port)
+	if err != nil {
+		return nil, err
+	}
 	req := []byte{0x04, 0x01}
-	req = binary.BigEndian.AppendUint16(req, uint16(port))
+	req = binary.BigEndian.AppendUint16(req, port16)
 	if ip := net.ParseIP(host).To4(); ip != nil {
 		req = append(req, ip...)
 		req = append(req, 0x00)
@@ -1334,6 +1366,21 @@ func dialSOCKS4(ctx context.Context, proxyAddr, target string, timeout time.Dura
 	_ = conn.SetDeadline(time.Time{})
 	closeOnErr = false
 	return conn, nil
+}
+
+func socksPort(port int) (uint16, error) {
+	if port < 0 || port > 65535 {
+		return 0, fmt.Errorf("SOCKS target port out of range: %d", port)
+	}
+	return uint16(port), nil
+}
+
+func socksHostLen(host string) (byte, error) {
+	if len(host) > 255 {
+		return 0, fmt.Errorf("SOCKS5 target host too long")
+	}
+	// #nosec G115 -- length is bounded above before conversion.
+	return byte(len(host)), nil
 }
 
 func (s *Server) sendUpstreamConnect(conn net.Conn, target string, passthroughAuth string) error {
@@ -1395,11 +1442,11 @@ func upstreamProxyAuthHeader(cfg config.Config, method, uri, challenge, passthro
 		}
 		authMode = challengeScheme
 	}
-	if authMode == "DIGEST" {
-		if !strings.HasPrefix(challenge, "Digest ") {
+	if authMode == authDigest {
+		if !strings.HasPrefix(challenge, authSchemeDigest+" ") {
 			return ""
 		}
-		params := parseAuthParams(strings.TrimPrefix(challenge, "Digest "))
+		params := parseAuthParams(strings.TrimPrefix(challenge, authSchemeDigest+" "))
 		realm := params["realm"]
 		nonce := params["nonce"]
 		qop := selectDigestQop(params["qop"])
@@ -1423,13 +1470,13 @@ func upstreamProxyAuthHeader(cfg config.Config, method, uri, challenge, passthro
 		auth, _ := connectionProxyAuthHeader(cfg, authMode, challenge)
 		return auth
 	}
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password))
+	return authSchemeBasic + " " + base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password))
 }
 
 func selectDigestQop(qop string) string {
 	for _, part := range strings.Split(qop, ",") {
-		if strings.EqualFold(strings.TrimSpace(part), "auth") {
-			return "auth"
+		if strings.EqualFold(strings.TrimSpace(part), digestQopAuth) {
+			return digestQopAuth
 		}
 	}
 	return strings.TrimSpace(qop)
@@ -1445,23 +1492,23 @@ func UpstreamProxyAuthHeader(cfg config.Config, method, uri string, challenges [
 
 func upstreamAuthModes(auth string) []string {
 	auth = strings.ToUpper(strings.TrimSpace(auth))
-	if auth == "" || auth == "ANY" {
-		return []string{"NEGOTIATE", "NTLM", "DIGEST", "BASIC"}
+	if auth == "" || auth == authAny {
+		return []string{authNegotiate, authNTLM, authDigest, authBasic}
 	}
-	if auth == "NONE" {
+	if auth == authNone {
 		return nil
 	}
-	if auth == "ANYSAFE" {
-		return []string{"NEGOTIATE", "NTLM", "DIGEST"}
+	if auth == authAnySafe {
+		return []string{authNegotiate, authNTLM, authDigest}
 	}
 	for _, prefix := range []struct {
 		name string
 		base []string
 		only bool
 	}{
-		{"SAFENO", []string{"NEGOTIATE", "NTLM", "DIGEST"}, false},
-		{"ONLY", []string{"NEGOTIATE", "NTLM", "DIGEST", "BASIC"}, true},
-		{"NO", []string{"NEGOTIATE", "NTLM", "DIGEST", "BASIC"}, false},
+		{"SAFENO", []string{authNegotiate, authNTLM, authDigest}, false},
+		{"ONLY", []string{authNegotiate, authNTLM, authDigest, authBasic}, true},
+		{"NO", []string{authNegotiate, authNTLM, authDigest, authBasic}, false},
 	} {
 		if method, ok := strings.CutPrefix(auth, prefix.name); ok && isKnownAuthScheme(method) {
 			if prefix.only {
@@ -1475,7 +1522,7 @@ func upstreamAuthModes(auth string) []string {
 
 func validateUpstreamAuth(auth string) error {
 	auth = strings.ToUpper(strings.TrimSpace(auth))
-	if auth == "" || auth == "ANY" || auth == "ANYSAFE" || auth == "NONE" {
+	if auth == "" || auth == authAny || auth == authAnySafe || auth == authNone {
 		return nil
 	}
 	for _, prefix := range []string{"SAFENO", "ONLY", "NO"} {
@@ -1566,7 +1613,7 @@ func authSchemeFromChallenge(challenge string) string {
 
 func isKnownAuthScheme(scheme string) bool {
 	switch strings.ToUpper(scheme) {
-	case "NEGOTIATE", "NTLM", "DIGEST", "BASIC":
+	case authNegotiate, authNTLM, authDigest, authBasic:
 		return true
 	default:
 		return false
@@ -1574,7 +1621,7 @@ func isKnownAuthScheme(scheme string) bool {
 }
 
 func isConnectionAuth(auth string) bool {
-	return strings.EqualFold(auth, "NTLM") || strings.EqualFold(auth, "NEGOTIATE")
+	return strings.EqualFold(auth, authNTLM) || strings.EqualFold(auth, authNegotiate)
 }
 
 func connectionProxyAuthHeader(cfg config.Config, authMode, challengeHeader string) (string, error) {
@@ -1590,7 +1637,7 @@ func connectionProxyAuthHeader(cfg config.Config, authMode, challengeHeader stri
 		if err != nil {
 			return "", err
 		}
-		if strings.EqualFold(authMode, "NEGOTIATE") {
+		if strings.EqualFold(authMode, authNegotiate) {
 			msg = spnegoNegTokenInit(msg)
 		}
 		return canonicalConnectionAuthScheme(scheme) + " " + base64.StdEncoding.EncodeToString(msg), nil
@@ -1600,7 +1647,7 @@ func connectionProxyAuthHeader(cfg config.Config, authMode, challengeHeader stri
 		return "", err
 	}
 	wrapResponse := false
-	if strings.EqualFold(authMode, "NEGOTIATE") && !isNTLMSSP(challenge) {
+	if strings.EqualFold(authMode, authNegotiate) && !isNTLMSSP(challenge) {
 		unwrapped, ok := unwrapSPNEGONTLMToken(challenge)
 		if !ok {
 			return "", nil
@@ -1619,10 +1666,10 @@ func connectionProxyAuthHeader(cfg config.Config, authMode, challengeHeader stri
 }
 
 func canonicalConnectionAuthScheme(scheme string) string {
-	if strings.EqualFold(scheme, "NTLM") {
-		return "NTLM"
+	if strings.EqualFold(scheme, authNTLM) {
+		return authNTLM
 	}
-	return "Negotiate"
+	return authSchemeNeg
 }
 
 func relay(a, b net.Conn, idle time.Duration) {
@@ -1650,7 +1697,7 @@ type idleConn struct {
 }
 
 func (c idleConn) Read(p []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(c.idle))
+	_ = c.SetReadDeadline(time.Now().Add(c.idle))
 	return c.Conn.Read(p)
 }
 

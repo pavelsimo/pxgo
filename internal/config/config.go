@@ -25,30 +25,61 @@ const (
 
 const LogStdoutTarget = "<stdout>"
 
+const (
+	keyServer         = "server"
+	keyPAC            = "pac"
+	keyPACEncoding    = "pac_encoding"
+	keyPort           = "port"
+	keyListen         = "listen"
+	keyGateway        = "gateway"
+	keyHostonly       = "hostonly"
+	keyAllow          = "allow"
+	keyNoProxy        = "noproxy"
+	keyUserAgent      = "useragent"
+	keyUsername       = "username"
+	keyPassword       = "password"
+	keyAuth           = "auth"
+	keyKerberos       = "kerberos"
+	keyWorkers        = "workers"
+	keyThreads        = "threads"
+	keyIdle           = "idle"
+	keySockTimeout    = "socktimeout"
+	keyProxyReload    = "proxyreload"
+	keyForeground     = "foreground"
+	keyLog            = "log"
+	keyClientAuth     = "client_auth"
+	keyClientNoSSPI   = "client_nosspi"
+	keyClientUsername = "client_username"
+	keyClientPassword = "client_password"
+	keyConfig         = "config"
+	keyTest           = "test"
+	localhostIP       = "127.0.0.1"
+)
+
 var Defaults = map[string]string{
-	"server":          "",
-	"pac":             "",
-	"pac_encoding":    "utf-8",
-	"port":            "3128",
-	"listen":          "127.0.0.1",
-	"gateway":         "0",
-	"hostonly":        "0",
-	"allow":           "*.*.*.*",
-	"noproxy":         "",
-	"useragent":       "",
-	"username":        "",
-	"auth":            "",
-	"kerberos":        "0",
-	"workers":         "1",
-	"threads":         "32",
-	"idle":            "30",
-	"socktimeout":     "20.0",
-	"proxyreload":     "60",
-	"foreground":      "0",
-	"log":             "0",
-	"client_auth":     "NONE",
-	"client_nosspi":   "0",
-	"client_username": "",
+	keyServer:         "",
+	keyPAC:            "",
+	keyPACEncoding:    "utf-8",
+	keyPort:           "3128",
+	keyListen:         localhostIP,
+	keyGateway:        "0",
+	keyHostonly:       "0",
+	keyAllow:          "*.*.*.*",
+	keyNoProxy:        "",
+	keyUserAgent:      "",
+	keyUsername:       "",
+	keyAuth:           "",
+	keyKerberos:       "0",
+	keyWorkers:        "1",
+	keyThreads:        "32",
+	keyIdle:           "30",
+	keySockTimeout:    "20.0",
+	keyProxyReload:    "60",
+	keyForeground:     "0",
+	keyLog:            "0",
+	keyClientAuth:     "NONE",
+	keyClientNoSSPI:   "0",
+	keyClientUsername: "",
 }
 
 var executablePath = os.Executable
@@ -100,24 +131,24 @@ type Config struct {
 }
 
 func Default() Config {
-	port, _ := strconv.Atoi(Defaults["port"])
-	workers, _ := strconv.Atoi(Defaults["workers"])
-	threads, _ := strconv.Atoi(Defaults["threads"])
-	idle, _ := strconv.Atoi(Defaults["idle"])
-	sockTimeout, _ := strconv.ParseFloat(Defaults["socktimeout"], 64)
-	proxyReload, _ := strconv.Atoi(Defaults["proxyreload"])
+	port, _ := strconv.Atoi(Defaults[keyPort])
+	workers, _ := strconv.Atoi(Defaults[keyWorkers])
+	threads, _ := strconv.Atoi(Defaults[keyThreads])
+	idle, _ := strconv.Atoi(Defaults[keyIdle])
+	sockTimeout, _ := strconv.ParseFloat(Defaults[keySockTimeout], 64)
+	proxyReload, _ := strconv.Atoi(Defaults[keyProxyReload])
 	return Config{
-		PACEncoding: Defaults["pac_encoding"],
+		PACEncoding: Defaults[keyPACEncoding],
 		Port:        port,
-		Listen:      Defaults["listen"],
-		Allow:       Defaults["allow"],
+		Listen:      Defaults[keyListen],
+		Allow:       Defaults[keyAllow],
 		Workers:     workers,
 		Threads:     threads,
 		Idle:        idle,
 		SockTimeout: sockTimeout,
 		ProxyReload: proxyReload,
-		Auth:        Defaults["auth"],
-		ClientAuth:  Defaults["client_auth"],
+		Auth:        Defaults[keyAuth],
+		ClientAuth:  Defaults[keyClientAuth],
 	}
 }
 
@@ -209,8 +240,8 @@ func GetHostIPs() []net.IP {
 			}
 		}
 	}
-	if !seen["127.0.0.1"] {
-		ips = append(ips, net.ParseIP("127.0.0.1"))
+	if !seen[localhostIP] {
+		ips = append(ips, net.ParseIP(localhostIP))
 	}
 	return ips
 }
@@ -224,14 +255,14 @@ func ParseArgs(args []string) (Config, error) {
 		configPath = os.Getenv("PX_CONFIG")
 	}
 	if configPath == "" {
-		configPath = dotenv["config"]
+		configPath = dotenv[keyConfig]
 	}
 	if configPath != "" {
 		cfg.ConfigPath = normalizePath(configPath)
 	}
 	if loadPath := ConfigPath(configPath); loadPath != "" {
 		if configPath != "" && !isSave {
-			if _, err := os.Stat(loadPath); err != nil {
+			if _, err := os.Stat(loadPath); err != nil { // #nosec G703 -- config paths are explicitly user-controlled inputs.
 				return cfg, fmt.Errorf("could not find config file: %s", loadPath)
 			}
 		}
@@ -343,7 +374,7 @@ func ParseArgs(args []string) (Config, error) {
 
 func preScanConfigPath(args []string) string {
 	for _, arg := range args {
-		if name, val, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "="); ok && name == "config" {
+		if name, val, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "="); ok && name == keyConfig {
 			return val
 		}
 	}
@@ -391,7 +422,7 @@ func loadDotenv() map[string]string {
 }
 
 func loadDotenvFile(path string, values map[string]string) bool {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G703 -- config paths are explicitly user-controlled inputs.
 	if err != nil {
 		return false
 	}
@@ -422,63 +453,63 @@ func loadDotenvFile(path string, values map[string]string) bool {
 
 func applyValue(cfg *Config, name, val string) error {
 	switch name {
-	case "server", "proxy":
+	case keyServer, "proxy":
 		cfg.Server = val
-	case "pac":
+	case keyPAC:
 		cfg.PAC = normalizePACLocation(val)
-	case "pac_encoding":
+	case keyPACEncoding:
 		cfg.PACEncoding = val
-	case "port":
+	case keyPort:
 		cfg.Port = parseIntValue(val, cfg.Port)
-	case "listen":
+	case keyListen:
 		cfg.Listen = val
-	case "gateway":
+	case keyGateway:
 		cfg.Gateway = truthy(val)
 		if cfg.Gateway {
 			cfg.Listen = ""
 		}
-	case "hostonly":
+	case keyHostonly:
 		cfg.Hostonly = truthy(val)
 		if cfg.Hostonly {
 			cfg.Listen = ""
 		}
-	case "allow":
+	case keyAllow:
 		cfg.Allow = val
-	case "noproxy":
+	case keyNoProxy:
 		cfg.NoProxy = val
-	case "username":
+	case keyUsername:
 		cfg.Username = val
-	case "password":
+	case keyPassword:
 		cfg.Password = val
-	case "client_password":
+	case keyClientPassword:
 		cfg.ClientPassword = val
-	case "auth":
+	case keyAuth:
 		cfg.Auth = strings.ToUpper(val)
-	case "kerberos":
+	case keyKerberos:
 		cfg.Kerberos = truthy(val)
-	case "workers":
+	case keyWorkers:
 		cfg.Workers = parseIntValue(val, cfg.Workers)
-	case "threads":
+	case keyThreads:
 		cfg.Threads = parseIntValue(val, cfg.Threads)
-	case "idle":
+	case keyIdle:
 		cfg.Idle = parseIntValue(val, cfg.Idle)
-	case "socktimeout":
+	case keySockTimeout:
 		cfg.SockTimeout = parseFloatValue(val, cfg.SockTimeout)
-	case "proxyreload":
+	case keyProxyReload:
 		cfg.ProxyReload = parseIntValue(val, cfg.ProxyReload)
-	case "foreground":
+	case keyForeground:
 		cfg.Foreground = truthy(val)
-	case "log":
+	case keyLog:
 		cfg.Log = parseIntValue(val, cfg.Log)
-	case "test":
+	case keyTest:
 		cfg.Test = val
-	case "config":
+	case keyConfig:
 		cfg.ConfigPath = normalizePath(val)
-	case "client_auth":
+	case keyClientAuth:
 		cfg.ClientAuth = strings.ToUpper(val)
-	case "client_username":
+	case keyClientUsername:
 		cfg.ClientUsername = val
-	case "client_nosspi":
+	case keyClientNoSSPI:
 		cfg.ClientNoSSPI = truthy(val)
 	default:
 		return fmt.Errorf("unsupported option %s", name)
@@ -587,31 +618,22 @@ func normalizePACLocation(pac string) string {
 	}
 	if strings.HasPrefix(pac, "file:") {
 		path := FileURLToLocalPath(pac)
-		if _, err := os.Stat(path); err == nil {
+		if _, err := os.Stat(path); err == nil { // #nosec G703 -- PAC paths are explicitly user-configured.
 			return path
 		}
 		return ""
 	}
 	if filepath.IsAbs(pac) {
-		if _, err := os.Stat(pac); err == nil {
+		if _, err := os.Stat(pac); err == nil { // #nosec G703 -- PAC paths are explicitly user-configured.
 			return pac
 		}
 		return ""
 	}
 	path := filepath.Join(GetScriptDir(), pac)
-	if _, err := os.Stat(path); err == nil {
+	if _, err := os.Stat(path); err == nil { // #nosec G703 -- relative PAC paths are resolved against the executable directory.
 		return path
 	}
 	return ""
-}
-
-func mergeMissing(dst *Config, src Config) {
-	if dst.Server == "" {
-		dst.Server = src.Server
-	}
-	if dst.PAC == "" {
-		dst.PAC = src.PAC
-	}
 }
 
 func ConfigPath(explicit string) string {
@@ -741,7 +763,7 @@ log = %d
 `, cfg.Server, cfg.PAC, cfg.PACEncoding, cfg.Port, listen, btoi(cfg.Gateway), btoi(cfg.Hostonly), cfg.Allow, cfg.NoProxy,
 		cfg.UserAgent, cfg.Username, cfg.Auth, btoi(cfg.Kerberos), cfg.ClientAuth, cfg.ClientUsername, btoi(cfg.ClientNoSSPI), cfg.Workers, cfg.Threads, cfg.Idle,
 		cfg.SockTimeout, cfg.ProxyReload, btoi(cfg.Foreground), cfg.Log)
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 func btoi(v bool) int {
@@ -753,6 +775,7 @@ func btoi(v bool) int {
 
 func ReadINI(path string) (Config, error) {
 	cfg := Default()
+	// #nosec G703 -- config paths are explicitly user-controlled inputs.
 	f, err := os.Open(path)
 	if err != nil {
 		return cfg, err

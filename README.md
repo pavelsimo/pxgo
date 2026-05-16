@@ -124,7 +124,8 @@ more Docker details.
 ## Development
 
 ```bash
-make tools       # install dev tools (golangci-lint, gofumpt, goimports, lefthook)
+make tools       # install dev tools and Git hooks
+make hooks       # install Git hooks only
 make build       # build binary to bin/pxgo
 make test        # run tests with race detector and coverage
 make lint        # run golangci-lint

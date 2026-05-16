@@ -23,6 +23,11 @@ import (
 
 var version = "dev"
 
+const (
+	authNone    = "NONE"
+	localhostIP = "127.0.0.1"
+)
+
 func main() {
 	cfg, err := config.ParseArgs(os.Args[1:])
 	if err != nil {
@@ -178,10 +183,10 @@ Options:
 func quit(cfg config.Config) error {
 	listen := cfg.Listen
 	if listen == "" {
-		listen = "127.0.0.1"
+		listen = localhostIP
 	}
 	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s:%d/PxgoQuit", listen, cfg.Port))
+	resp, err := client.Get("http://" + net.JoinHostPort(listen, fmt.Sprint(cfg.Port)) + "/PxgoQuit")
 	if err != nil {
 		return err
 	}
@@ -195,7 +200,7 @@ func quit(cfg config.Config) error {
 func runSelfTest(cfg config.Config) error {
 	testAuthCfg := cfg
 	if cfg.TestAuth {
-		cfg.Auth = "NONE"
+		cfg.Auth = authNone
 	}
 	s, err := proxy.New(cfg)
 	if err != nil {
@@ -216,7 +221,7 @@ func runSelfTest(cfg config.Config) error {
 	proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%d", listenForClient(cfg.Listen), cfg.Port))
 	tr := &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- self-test intentionally accepts arbitrary test endpoints.
 	}
 	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
 	methods := []string{http.MethodGet}
@@ -325,7 +330,7 @@ func selfTestAllMode(test string) bool {
 }
 
 func waitPort(listen string, port int) error {
-	addr := fmt.Sprintf("%s:%d", listenForClient(listen), port)
+	addr := net.JoinHostPort(listenForClient(listen), fmt.Sprint(port))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
@@ -341,10 +346,13 @@ func waitPort(listen string, port int) error {
 func listenForClient(listen string) string {
 	for _, raw := range strings.Split(listen, ",") {
 		host := strings.TrimSpace(raw)
-		if host == "" || host == "0.0.0.0" {
-			return "127.0.0.1"
+		if host == "" {
+			continue
+		}
+		if host == "0.0.0.0" {
+			return localhostIP
 		}
 		return host
 	}
-	return "127.0.0.1"
+	return localhostIP
 }

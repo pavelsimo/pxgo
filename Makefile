@@ -7,8 +7,13 @@ LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION)"
 GOLANGCI_LINT_VERSION := v2.12.2
 GOFUMPT_VERSION       := v0.7.0
 GOIMPORTS_VERSION     := v0.29.0
+LEFTHOOK_VERSION      := v1.13.6
+GO_BIN                := $(shell go env GOBIN 2>/dev/null || true)
+ifeq ($(GO_BIN),)
+GO_BIN                := $(shell go env GOPATH)/bin
+endif
 
-.PHONY: build install test coverage lint fmt fmt-check ci release clean tools docs help
+.PHONY: build install test coverage lint fmt fmt-check ci release clean tools hooks docs help
 
 build: ## Build binary to bin/
 	@mkdir -p $(BUILD_DIR)
@@ -42,11 +47,15 @@ release: ## Cut a release with goreleaser (requires GITHUB_TOKEN)
 clean: ## Remove build artifacts
 	rm -rf $(BUILD_DIR)/ dist/ coverage.out
 
-tools: ## Install dev tools
+tools: ## Install dev tools and Git hooks
 	go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
 	go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	go install github.com/evilmartians/lefthook@latest
+	go install github.com/evilmartians/lefthook@$(LEFTHOOK_VERSION)
+	$(GO_BIN)/lefthook install
+
+hooks: ## Install Git hooks
+	lefthook install
 
 docs: ## Build documentation site
 	node scripts/build-docs-site.mjs

@@ -16,6 +16,8 @@ const (
 	CheckInterval = 300 * time.Second
 	RetryInterval = 60 * time.Second
 	RenewalMargin = 10 * time.Minute
+	kinitCommand  = "kinit"
+	klistCommand  = "klist"
 )
 
 type commandResult struct {
@@ -74,7 +76,7 @@ func defaultCommandRunner(timeout time.Duration, args []string, env map[string]s
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) // #nosec G204 -- callers pass fixed Kerberos command names with controlled arguments.
 	if env != nil {
 		cmd.Env = envSlice(env)
 	}
@@ -168,7 +170,7 @@ func (m *Manager) ParseAndSetExpiry(klistOutput string) {
 }
 
 func DetectHeimdal() bool {
-	result, err := commandRunner(5*time.Second, []string{"klist", "--version"}, nil, "")
+	result, err := commandRunner(5*time.Second, []string{klistCommand, "--version"}, nil, "")
 	if err != nil {
 		return false
 	}
@@ -180,13 +182,14 @@ func (m *Manager) KinitWithPassword() bool {
 	if password == nil {
 		return false
 	}
-	result, err := commandRunner(30*time.Second, []string{"kinit", m.Principal}, m.Env, *password+"\n")
+	result, err := commandRunner(30*time.Second, []string{kinitCommand, m.Principal}, m.Env, *password+"\n")
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			m.Backoff = RetryInterval
-		} else if errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err) {
+		case errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err):
 			m.Backoff = CheckInterval
-		} else {
+		default:
 			m.Backoff = RetryInterval
 		}
 		return false
@@ -213,7 +216,7 @@ func (m *Manager) KinitWithPassword() bool {
 }
 
 func (m *Manager) KinitRenew() bool {
-	result, err := commandRunner(5*time.Second, []string{"kinit", "-R"}, m.Env, "")
+	result, err := commandRunner(5*time.Second, []string{kinitCommand, "-R"}, m.Env, "")
 	if err != nil || result.ExitCode != 0 {
 		return false
 	}
@@ -226,7 +229,7 @@ func (m *Manager) KlistValid() bool {
 	if m.IsHeimdal {
 		flag = "--test"
 	}
-	result, err := commandRunner(5*time.Second, []string{"klist", flag}, m.Env, "")
+	result, err := commandRunner(5*time.Second, []string{klistCommand, flag}, m.Env, "")
 	if err != nil {
 		return false
 	}
@@ -238,7 +241,7 @@ func (m *Manager) KlistValid() bool {
 }
 
 func (m *Manager) RunKlist() (string, bool) {
-	result, err := commandRunner(5*time.Second, []string{"klist"}, m.Env, "")
+	result, err := commandRunner(5*time.Second, []string{klistCommand}, m.Env, "")
 	if err != nil || result.ExitCode != 0 {
 		return "", false
 	}

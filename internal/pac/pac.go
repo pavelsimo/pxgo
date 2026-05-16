@@ -12,6 +12,11 @@ import (
 	"github.com/dop251/goja"
 )
 
+const (
+	directProxy = "DIRECT"
+	localhostIP = "127.0.0.1"
+)
+
 type Pac struct {
 	location string
 	encoding string
@@ -95,7 +100,7 @@ func (p *Pac) FindProxyForURL(rawurl, host string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.loadLocked()
-	proxies := "DIRECT"
+	proxies := directProxy
 	if p.fn != nil {
 		if out, err := p.fn(goja.Undefined(), p.vm.ToValue(rawurl), p.vm.ToValue(host)); err == nil {
 			proxies = out.String()
@@ -131,7 +136,7 @@ func (p *Pac) DNSResolve(host string) string {
 func (p *Pac) MyIPAddress() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return "127.0.0.1"
+		return localhostIP
 	}
 	for _, addr := range addrs {
 		ipnet, ok := addr.(*net.IPNet)
@@ -142,7 +147,7 @@ func (p *Pac) MyIPAddress() string {
 			return ip.String()
 		}
 	}
-	return "127.0.0.1"
+	return localhostIP
 }
 
 func (p *Pac) String() string {
