@@ -1,0 +1,7 @@
+pre-commit:
+  parallel: false
+  commands:
+    fmt-check:
+      run: make fmt-check
+    lint:
+      run: make lint

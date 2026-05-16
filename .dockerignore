@@ -1,0 +1,12 @@
+.git
+px-python/.git
+px-python/.venv
+px-python/__pycache__
+px-python/.pytest_cache
+px-python/dist
+px-python/build
+dist
+coverage.out
+*.log
+debug-*.log
+px

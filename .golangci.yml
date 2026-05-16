@@ -1,0 +1,37 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosec
+    - revive
+    - gocritic
+    - misspell
+    - unused
+    - gocyclo
+    - ineffassign
+    - bodyclose
+    - nilerr
+    - goconst
+    - prealloc
+    - unparam
+    - whitespace
+
+linters-settings:
+  gocyclo:
+    min-complexity: 50
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - disableStutteringCheck
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck

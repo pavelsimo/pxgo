@@ -1,0 +1,7 @@
+# Heimdal Kerberos KDC for integration tests.
+FROM debian:bookworm-slim
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq heimdal-kdc heimdal-clients && \
+    rm -rf /var/lib/apt/lists/*
+

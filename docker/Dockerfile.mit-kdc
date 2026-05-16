@@ -1,0 +1,5 @@
+# MIT Kerberos KDC for integration tests.
+FROM alpine:latest
+
+RUN apk add --no-cache krb5-server krb5
+

@@ -1,0 +1,16 @@
+# Heimdal client + px-go from source for integration tests.
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/px .
+
+FROM alpine:latest
+
+RUN apk add --no-cache heimdal krb5 ca-certificates tini
+COPY --from=builder /out/px /usr/local/bin/px
+WORKDIR /px
+ENTRYPOINT ["tini", "--", "px"]
+
