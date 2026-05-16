@@ -526,13 +526,13 @@ html[data-theme=dark] .theme-icon-moon{display:none}html[data-theme=dark] .theme
 }
 .feature-card h3{font-size:1.1rem;margin:0 0 8px;color:var(--ink);font-weight:700}
 .feature-card p{margin:0;color:var(--muted);font-size:.92rem;line-height:1.5}
-.main h1{font-size:2.5rem;font-weight:800;line-height:1.08;color:var(--ink);margin:0 0 1rem}
-.main h2{font-size:1.6rem;line-height:1.2;margin:2.2em 0 .65em;font-weight:800;color:var(--ink);scroll-margin-top:24px}
-.main h3{font-size:1.2rem;margin:1.8em 0 .45em;font-weight:700;color:var(--ink);scroll-margin-top:24px}
+.main h1{font-size:2.5rem;font-weight:800;line-height:1.08;color:var(--ink);margin:0 0 1rem;position:relative}
+.main h2{font-size:1.6rem;line-height:1.2;margin:2.2em 0 .65em;font-weight:800;color:var(--ink);scroll-margin-top:24px;position:relative}
+.main h3{font-size:1.2rem;margin:1.8em 0 .45em;font-weight:700;color:var(--ink);scroll-margin-top:24px;position:relative}
 .main h4{font-size:1rem;margin:1.5em 0 .45em;font-weight:700;color:var(--muted);scroll-margin-top:24px}
 .main p{margin:0 0 1.15em;line-height:1.7}.main ul,.main ol{padding-left:1.4rem;margin:0 0 1.2em}.main li{margin:.3em 0;line-height:1.7}
 .main blockquote{border-left:4px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:1.5em 0}
-.anchor{opacity:0;font-size:.8em;color:var(--muted);margin-right:.4rem;text-decoration:none}.main h2:hover .anchor,.main h3:hover .anchor{opacity:1}
+.anchor{position:absolute;right:100%;padding-right:.45rem;opacity:0;font-size:.8em;color:var(--muted);text-decoration:none}.main h1:hover .anchor,.main h2:hover .anchor,.main h3:hover .anchor{opacity:1}
 code{
   font-family:var(--font-mono);font-size:.87em;background:var(--accent-soft);border:1px solid var(--line);
   border-radius:6px;padding:.1em .4em;color:var(--accent-strong);font-weight:500;
