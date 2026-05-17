@@ -1059,6 +1059,9 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 		}
 		resp, err := transport.RoundTrip(outReq)
 		if err != nil {
+			if req.Context().Err() != nil {
+				return nil, req.Context().Err()
+			}
 			debug.Dprint("HTTP: proxy attempt failed: " + err.Error())
 			lastErr = err
 			continue
