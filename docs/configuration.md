@@ -6,8 +6,8 @@ pxgo configuration sources are applied in this order:
 defaults < pxgo.ini < .env < environment < command line
 ```
 
-Environment variables use the `PX_` prefix. For example, `--proxy` maps to
-`PX_PROXY`, and `--client-username` maps to `PX_CLIENT_USERNAME`.
+Environment variables use the `PXGO_` prefix. For example, `--proxy` maps to
+`PXGO_PROXY`, and `--client-username` maps to `PXGO_CLIENT_USERNAME`.
 
 ## Config File Lookup
 
@@ -72,24 +72,24 @@ human-edited config with explanations.
 | `socktimeout` / `--socktimeout` | `20.0` | Upstream socket timeout in seconds |
 | `proxyreload` / `--proxyreload` | `60` | PAC/system proxy refresh interval |
 | `foreground` / `--foreground` | `0` | Compatibility flag |
-| `log` / `--log` | `0` | Debug log destination |
+| `log` / `--log` | `0` | Debug log destination: `1`=script dir, `2`=cwd, `3`=unique file, `4`=stdout |
 
 ## Passwords
 
 For non-interactive runs, use environment variables:
 
 ```bash
-PX_PASSWORD='upstream-secret' ./pxgo --username='DOMAIN\user'
-PX_CLIENT_PASSWORD='client-secret' ./pxgo --client-username=client
+PXGO_PASSWORD='upstream-secret' ./pxgo --username='DOMAIN\user'
+PXGO_CLIENT_PASSWORD='client-secret' ./pxgo --client-username=client
 ```
 
 The Go port also has a simple opt-in plaintext keyring for tests and controlled
 deployments:
 
 ```bash
-PX_KEYRING_PLAINTEXT=1 ./pxgo --username='DOMAIN\user' --password
-PX_KEYRING_PLAINTEXT=1 ./pxgo --client-username=client --client-password
+PXGO_KEYRING_PLAINTEXT=1 ./pxgo --username='DOMAIN\user' --password
+PXGO_KEYRING_PLAINTEXT=1 ./pxgo --client-username=client --client-password
 ```
 
-Use `PX_KEYRING_FILE=/path/to/keyring.json` to choose the plaintext keyring
+Use `PXGO_KEYRING_FILE=/path/to/keyring.json` to choose the plaintext keyring
 file.

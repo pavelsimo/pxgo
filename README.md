@@ -54,7 +54,7 @@ pxgo --quit
 
 ## Configuration
 
-pxgo accepts command-line flags, `PX_*` environment variables, `.env`, and
+pxgo accepts command-line flags, `PXGO_*` environment variables, `.env`, and
 `pxgo.ini`. Precedence is:
 
 ```text
@@ -90,7 +90,7 @@ The repository includes a commented sample config at [pxgo.ini](pxgo.ini).
 | `--auth=TYPE` | Upstream auth mode: `ANY`, `ANYSAFE`, `NEGOTIATE`, `NTLM`, `DIGEST`, `BASIC`, `NONE` |
 | `--username=USER` | Upstream proxy username or Kerberos principal |
 | `--client-auth=TYPE` | Require local client auth: `NONE`, `ANY`, `ANYSAFE`, `NEGOTIATE`, `NTLM`, `DIGEST`, `BASIC` |
-| `--verbose` | Log to stdout |
+| `--log=N` | Debug log destination: `1`=script dir (`--debug`), `2`=cwd, `3`=unique file (`--uniqlog`), `4`=stdout (`--verbose`) |
 
 Use `pxgo --help` for the current CLI help.
 

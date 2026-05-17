@@ -53,7 +53,7 @@ ranges, and host/domain suffixes.
 Set `--auth` to select upstream proxy authentication:
 
 ```bash
-PX_PASSWORD='secret' ./pxgo \
+PXGO_PASSWORD='secret' ./pxgo \
   --proxy=proxy.company.com:8080 \
   --auth=NTLM \
   --username='DOMAIN\user'
@@ -72,7 +72,7 @@ Supported auth selectors:
 Kerberos ticket management is available on Linux and macOS:
 
 ```bash
-PX_PASSWORD='secret' ./pxgo --kerberos --username=user@REALM
+PXGO_PASSWORD='secret' ./pxgo --kerberos --username=user@REALM
 ```
 
 pxgo creates a per-process credential cache, runs `kinit`, refreshes tickets with
@@ -84,7 +84,7 @@ working Kerberos configuration such as `/etc/krb5.conf`.
 By default local clients can use pxgo without authenticating. Require client auth:
 
 ```bash
-PX_CLIENT_PASSWORD='client-secret' ./pxgo \
+PXGO_CLIENT_PASSWORD='client-secret' ./pxgo \
   --client-auth=DIGEST \
   --client-username=client
 ```
@@ -110,13 +110,14 @@ Allow only IP addresses assigned to local interfaces:
 
 ## Logging
 
-```bash
-./pxgo --verbose
-./pxgo --debug
-./pxgo --uniqlog
-```
+pxgo supports four log destinations controlled by `--log=N`, `PXGO_LOG=N`, or `settings:log=N` in the config file:
 
-`--verbose` logs to stdout. `--debug` and `--uniqlog` write debug logs to files.
+```bash
+./pxgo --log=1        # log to script directory (alias: --debug)
+./pxgo --log=2        # log to working directory
+./pxgo --log=3        # log to working directory with unique filename (alias: --uniqlog)
+./pxgo --log=4        # log to stdout, implies --foreground (alias: --verbose)
+```
 
 ## Self-Test
 
