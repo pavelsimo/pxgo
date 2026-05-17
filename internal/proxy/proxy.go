@@ -29,6 +29,7 @@ import (
 	"golang.org/x/crypto/md4" //nolint:staticcheck,gosec // NTLM compatibility requires MD4.
 
 	"github.com/pavelsimo/pxgo/internal/config"
+	"github.com/pavelsimo/pxgo/internal/debug"
 	"github.com/pavelsimo/pxgo/internal/kerberos"
 	"github.com/pavelsimo/pxgo/internal/wproxy"
 )
@@ -209,6 +210,7 @@ func (s *Server) Start() error {
 	s.stateMu.Unlock()
 	errc := make(chan error, len(listeners))
 	for _, ln := range listeners {
+		debug.Dprint("listening on " + ln.Addr().String())
 		go func(ln net.Listener) {
 			err := srv.Serve(ln)
 			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
@@ -250,6 +252,7 @@ func (s *Server) Port() int {
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	debug.Dprint(req.Method + " " + req.RequestURI)
 	if err := s.reloadProxyIfDue(); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
@@ -264,10 +267,12 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !s.isClientAllowed(req.RemoteAddr) {
+		debug.Dprint("client not allowed: " + req.RemoteAddr)
 		http.Error(rw, "forbidden", http.StatusForbidden)
 		return
 	}
 	if s.clientAuthEnabled() && !s.authenticateClient(req) {
+		debug.Dprint("client auth required: " + req.RemoteAddr)
 		s.clearClientAuthed(req.RemoteAddr)
 		for _, challenge := range s.clientAuthChallenges(req) {
 			rw.Header().Add("Proxy-Authenticate", challenge)
@@ -377,12 +382,14 @@ func (s *Server) authenticateClient(req *http.Request) bool {
 		if isBodyMethod(req.Method) && req.ContentLength == 0 {
 			return false
 		}
+		debug.Dprint("client already authenticated: " + req.RemoteAddr)
 		return true
 	}
 	if !s.checkClientAuth(req) {
 		return false
 	}
 	s.setClientAuthed(req.RemoteAddr)
+	debug.Dprint("client authenticated: " + req.RemoteAddr)
 	return true
 }
 
@@ -421,14 +428,17 @@ func (s *Server) checkClientAuth(req *http.Request) bool {
 		switch auth {
 		case authBasic:
 			if s.checkBasicClientAuth(req) {
+				debug.Dprint("client auth success: BASIC from " + req.RemoteAddr)
 				return true
 			}
 		case authDigest:
 			if s.checkDigestClientAuth(req) {
+				debug.Dprint("client auth success: DIGEST from " + req.RemoteAddr)
 				return true
 			}
 		case authNTLM:
 			if s.checkNTLMClientAuth(req, authNTLM) {
+				debug.Dprint("client auth success: NTLM from " + req.RemoteAddr)
 				return true
 			}
 		case authNegotiate:
@@ -436,10 +446,12 @@ func (s *Server) checkClientAuth(req *http.Request) bool {
 			// NTLMSSP tokens carried under Negotiate when explicit client
 			// credentials are configured.
 			if s.checkNTLMClientAuth(req, authSchemeNeg) {
+				debug.Dprint("client auth success: NEGOTIATE from " + req.RemoteAddr)
 				return true
 			}
 		}
 	}
+	debug.Dprint("client auth failed from " + req.RemoteAddr)
 	return false
 }
 
@@ -996,11 +1008,14 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 		scheme := httpScheme
 		targetURL = scheme + "://" + req.Host + req.URL.RequestURI()
 	}
+	debug.Dprint("HTTP target: " + targetURL)
 	proxies, _, _, err := s.currentWproxy().FindProxyForURL(targetURL)
 	if err != nil {
+		debug.Dprint("HTTP proxy lookup error: " + err.Error())
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
+	debug.Dprint(fmt.Sprintf("HTTP proxies: %v", proxies))
 	u, err := url.Parse(targetURL)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
@@ -1014,10 +1029,12 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 	incomingProxyAuth := req.Header.Get("Proxy-Authorization")
 	resp, err := s.roundTripHTTPWithProxyFallback(req, u, body, targetURL, incomingProxyAuth, proxies)
 	if err != nil {
+		debug.Dprint("HTTP error: " + err.Error())
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	debug.Dprint(fmt.Sprintf("HTTP response: %d %s", resp.StatusCode, targetURL))
 	copyHeader(rw.Header(), resp.Header)
 	rw.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(rw, resp.Body)
@@ -1027,6 +1044,11 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 	candidates := proxyCandidates(proxies)
 	var lastErr error
 	for _, candidate := range candidates {
+		if candidate == wproxy.Direct {
+			debug.Dprint("HTTP: trying direct connection to " + targetURL)
+		} else {
+			debug.Dprint(fmt.Sprintf("HTTP: trying proxy %s:%d for %s", candidate.Host, candidate.Port, targetURL))
+		}
 		transport := s.httpTransportForProxy(candidate)
 		usesUpstreamProxy := candidate != wproxy.Direct
 		outReq := s.newOutboundRequest(req, u, body, "")
@@ -1037,6 +1059,7 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 		}
 		resp, err := transport.RoundTrip(outReq)
 		if err != nil {
+			debug.Dprint("HTTP: proxy attempt failed: " + err.Error())
 			lastErr = err
 			continue
 		}
@@ -1048,6 +1071,7 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 	if lastErr == nil {
 		lastErr = errors.New("no proxy candidates")
 	}
+	debug.Dprint("HTTP: all candidates failed: " + lastErr.Error())
 	return nil, lastErr
 }
 
@@ -1084,6 +1108,7 @@ func proxyCandidates(proxies []wproxy.Server) []wproxy.Server {
 
 func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request, u *url.URL, body []byte, targetURL, passthroughAuth string, resp *http.Response) *http.Response {
 	for attempts := 0; attempts < 3 && resp.StatusCode == http.StatusProxyAuthRequired; attempts++ {
+		debug.Dprint(fmt.Sprintf("HTTP proxy auth challenge (attempt %d): %s", attempts+1, targetURL))
 		challenge := selectProxyAuthenticateChallenge(s.cfg.Auth, resp.Header.Values("Proxy-Authenticate"))
 		auth := upstreamProxyAuthHeader(s.cfg, req.Method, targetURL, challenge, passthroughAuth)
 		if auth == "" {
@@ -1137,14 +1162,18 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 	if !strings.Contains(target, ":") {
 		target += ":443"
 	}
+	debug.Dprint("CONNECT target: " + target)
 	proxies, _, _, err := s.currentWproxy().FindProxyForURL("https://" + target)
 	if err != nil {
+		debug.Dprint("CONNECT proxy lookup error: " + err.Error())
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
+	debug.Dprint(fmt.Sprintf("CONNECT proxies: %v", proxies))
 	var upstream net.Conn
 	upstream, err = s.connectWithProxyFallback(target, req.Header.Get("Proxy-Authorization"), proxies)
 	if err != nil {
+		debug.Dprint("CONNECT failed: " + err.Error())
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1161,6 +1190,7 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 	}
 	_, _ = brw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	_ = brw.Flush()
+	debug.Dprint("CONNECT tunnel established: " + target)
 	go relay(client, upstream, time.Duration(s.cfg.Idle)*time.Second)
 }
 
@@ -1171,9 +1201,11 @@ func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, prox
 		var upstream net.Conn
 		var err error
 		if p == wproxy.Direct {
+			debug.Dprint("CONNECT: dialing direct to " + target)
 			upstream, err = net.DialTimeout("tcp", target, timeout) // #nosec G704 -- this proxy must dial client-requested CONNECT targets.
 		} else {
 			addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+			debug.Dprint(fmt.Sprintf("CONNECT: dialing via %s proxy %s for %s", proxyScheme(p), addr, target))
 			switch scheme := proxyScheme(p); {
 			case scheme == httpsScheme:
 				upstream, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, &tls.Config{ServerName: p.Host})
@@ -1190,8 +1222,10 @@ func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, prox
 			}
 		}
 		if err == nil {
+			debug.Dprint("CONNECT: upstream connected to " + target)
 			return upstream, nil
 		}
+		debug.Dprint("CONNECT: attempt failed: " + err.Error())
 		if upstream != nil {
 			_ = upstream.Close()
 		}
@@ -1200,6 +1234,7 @@ func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, prox
 	if lastErr == nil {
 		lastErr = errors.New("no proxy candidates")
 	}
+	debug.Dprint("CONNECT: all candidates failed for " + target + ": " + lastErr.Error())
 	return nil, lastErr
 }
 

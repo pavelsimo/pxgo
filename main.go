@@ -169,6 +169,12 @@ Options:
   --save                          Save configuration to pxgo.ini
   --password                      Store upstream password
   --client-password               Store downstream password
+  --log= | PXGO_LOG= | settings:log=
+  Enable debug logging. default: 0
+    1 = Log to script dir [--debug]
+    2 = Log to working dir
+    3 = Log to working dir with unique filename [--uniqlog]
+    4 = Log to stdout [--verbose]. Implies --foreground
   --quit                          Stop a running proxy
   --restart                       Quit then start the proxy
   --install                       Install pxgo in Windows startup registry
