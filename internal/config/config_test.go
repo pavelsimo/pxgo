@@ -501,13 +501,6 @@ func TestPlaintextKeyringStoreAndLoad(t *testing.T) {
 	}
 }
 
-func TestPlaintextKeyringRequiresOptIn(t *testing.T) {
-	t.Setenv("PXGO_KEYRING_PLAINTEXT", "")
-	if err := StorePassword(Realm, "user", "pass"); err == nil {
-		t.Fatal("expected keyring opt-in error")
-	}
-}
-
 func TestGatewayAndHostonlyNormalizeListenAfterAllInputs(t *testing.T) {
 	cfg, err := ParseArgs([]string{"--gateway", "--listen=127.0.0.2"})
 	if err != nil {

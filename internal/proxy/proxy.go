@@ -1110,10 +1110,22 @@ func proxyCandidates(proxies []wproxy.Server) []wproxy.Server {
 }
 
 func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request, u *url.URL, body []byte, targetURL, passthroughAuth string, resp *http.Response) *http.Response {
+	var session authSession
 	for attempts := 0; attempts < 3 && resp.StatusCode == http.StatusProxyAuthRequired; attempts++ {
 		debug.Dprint(fmt.Sprintf("HTTP proxy auth challenge (attempt %d): %s", attempts+1, targetURL))
 		challenge := selectProxyAuthenticateChallenge(s.cfg.Auth, resp.Header.Values("Proxy-Authenticate"))
-		auth := upstreamProxyAuthHeader(s.cfg, req.Method, targetURL, challenge, passthroughAuth)
+		var auth string
+		switch {
+		case session != nil:
+			auth, _ = sspiSessionAuth(session, challenge)
+		case isWindowsSSPICandidate(s.cfg, challenge):
+			if sess, err := newSSPISession(); err == nil {
+				session = sess
+				auth, _ = session.Negotiate()
+			}
+		default:
+			auth = upstreamProxyAuthHeader(s.cfg, req.Method, targetURL, challenge, passthroughAuth)
+		}
 		if auth == "" {
 			s.forceKerberosReloadForUpstreamAuth(resp)
 			return resp
@@ -1129,6 +1141,16 @@ func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request
 	}
 	s.forceKerberosReloadForUpstreamAuth(resp)
 	return resp
+}
+
+// sspiSessionAuth picks Negotiate or Authenticate depending on whether the
+// server challenge header contains a token.
+func sspiSessionAuth(session authSession, challenge string) (string, error) {
+	_, tokenPart, hasToken := strings.Cut(strings.TrimSpace(challenge), " ")
+	if hasToken && strings.TrimSpace(tokenPart) != "" {
+		return session.Authenticate(challenge)
+	}
+	return session.Negotiate()
 }
 
 func (s *Server) newOutboundRequest(req *http.Request, u *url.URL, body []byte, proxyAuth string) *http.Request {
@@ -1426,13 +1448,19 @@ func (s *Server) sendUpstreamConnect(conn net.Conn, target string, passthroughAu
 }
 
 func sendUpstreamConnectWithAuth(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, onAuthFailure func(*http.Response)) error {
-	return sendUpstreamConnectAttempt(conn, target, cfg, challenge, passthroughAuth, 0, onAuthFailure)
+	return sendUpstreamConnectAttempt(conn, target, cfg, challenge, passthroughAuth, 0, nil, onAuthFailure)
 }
 
-func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, attempts int, onAuthFailure func(*http.Response)) error {
+func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, attempts int, session authSession, onAuthFailure func(*http.Response)) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
-	if auth := upstreamProxyAuthHeader(cfg, http.MethodConnect, target, challenge, passthroughAuth); auth != "" {
+	var auth string
+	if session != nil {
+		auth, _ = sspiSessionAuth(session, challenge)
+	} else {
+		auth = upstreamProxyAuthHeader(cfg, http.MethodConnect, target, challenge, passthroughAuth)
+	}
+	if auth != "" {
 		fmt.Fprintf(&b, "Proxy-Authorization: %s\r\n", auth)
 	}
 	b.WriteString("\r\n")
@@ -1451,8 +1479,17 @@ func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config,
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
+		nextSession := session
+		if nextSession == nil && isWindowsSSPICandidate(cfg, nextChallenge) {
+			if sess, err := newSSPISession(); err == nil {
+				nextSession = sess
+			}
+		}
+		if nextSession != nil {
+			return sendUpstreamConnectAttempt(conn, target, cfg, nextChallenge, passthroughAuth, attempts+1, nextSession, onAuthFailure)
+		}
 		if auth := upstreamProxyAuthHeader(cfg, http.MethodConnect, target, nextChallenge, passthroughAuth); auth != "" {
-			return sendUpstreamConnectAttempt(conn, target, cfg, nextChallenge, passthroughAuth, attempts+1, onAuthFailure)
+			return sendUpstreamConnectAttempt(conn, target, cfg, nextChallenge, passthroughAuth, attempts+1, nil, onAuthFailure)
 		}
 	}
 	if resp.StatusCode/100 != 2 {

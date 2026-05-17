@@ -76,19 +76,29 @@ human-edited config with explanations.
 
 ## Passwords
 
-For non-interactive runs, use environment variables:
+Store credentials interactively (prompts with no echo, saves to OS keyring):
+
+```bash
+./pxgo --username='DOMAIN\user' --password
+./pxgo --client-username=client --client-password
+```
+
+On Windows this uses Credential Manager; on macOS, Keychain; on Linux,
+libsecret. Once stored, pxgo loads the password automatically when the
+matching username is supplied.
+
+For non-interactive runs (Docker, CI), use environment variables instead:
 
 ```bash
 PXGO_PASSWORD='upstream-secret' ./pxgo --username='DOMAIN\user'
 PXGO_CLIENT_PASSWORD='client-secret' ./pxgo --client-username=client
 ```
 
-The Go port also has a simple opt-in plaintext keyring for tests and controlled
-deployments:
+For environments without an OS keyring, opt in to plaintext storage:
 
 ```bash
-PXGO_KEYRING_PLAINTEXT=1 ./pxgo --username='DOMAIN\user' --password
-PXGO_KEYRING_PLAINTEXT=1 ./pxgo --client-username=client --client-password
+PXGO_KEYRING_PLAINTEXT=1 ./pxgo --username='DOMAIN\user' --password=secret
+PXGO_KEYRING_PLAINTEXT=1 ./pxgo --client-username=client --client-password=secret
 ```
 
 Use `PXGO_KEYRING_FILE=/path/to/keyring.json` to choose the plaintext keyring

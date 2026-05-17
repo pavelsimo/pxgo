@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 const (
@@ -564,9 +566,30 @@ func StorePassword(realm, username, password string) error {
 	if password == "" {
 		return errors.New("password is required")
 	}
-	if os.Getenv(envPrefix+"KEYRING_PLAINTEXT") != "1" {
-		return errors.New("no keyring backend configured; set PXGO_KEYRING_PLAINTEXT=1 for plaintext storage")
+	// PXGO_KEYRING_PLAINTEXT=1 bypasses the OS keyring (useful for Docker/CI).
+	if os.Getenv(envPrefix+"KEYRING_PLAINTEXT") == "1" {
+		return storePlaintext(realm, username, password)
 	}
+	if err := keyring.Set(realm, username, password); err == nil {
+		return nil
+	}
+	return errors.New("no keyring backend available; set PXGO_KEYRING_PLAINTEXT=1 for plaintext storage")
+}
+
+func GetPassword(realm, username string) (string, bool) {
+	if username == "" {
+		return "", false
+	}
+	if os.Getenv(envPrefix+"KEYRING_PLAINTEXT") == "1" {
+		return getPlaintext(realm, username)
+	}
+	if pwd, err := keyring.Get(realm, username); err == nil {
+		return pwd, true
+	}
+	return "", false
+}
+
+func storePlaintext(realm, username, password string) error {
 	path := keyringPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -586,10 +609,7 @@ func StorePassword(realm, username, password string) error {
 	return os.WriteFile(path, raw, 0o600)
 }
 
-func GetPassword(realm, username string) (string, bool) {
-	if username == "" || os.Getenv(envPrefix+"KEYRING_PLAINTEXT") != "1" {
-		return "", false
-	}
+func getPlaintext(realm, username string) (string, bool) {
 	raw, err := os.ReadFile(keyringPath())
 	if err != nil {
 		return "", false

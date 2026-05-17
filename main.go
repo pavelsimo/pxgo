@@ -19,6 +19,7 @@ import (
 	"github.com/pavelsimo/pxgo/internal/debug"
 	"github.com/pavelsimo/pxgo/internal/proxy"
 	"github.com/pavelsimo/pxgo/internal/winstartup"
+	"golang.org/x/term"
 )
 
 var version = "dev"
@@ -73,17 +74,39 @@ func main() {
 		return
 	}
 	if cfg.PasswordAction {
+		if cfg.Password == "" {
+			fmt.Fprintf(os.Stderr, "Password for %s: ", cfg.Username)
+			raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			cfg.Password = string(raw)
+		}
 		if err := config.StorePassword(config.Realm, cfg.Username, cfg.Password); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+		fmt.Fprintf(os.Stdout, "Password saved for %s\n", cfg.Username)
 		return
 	}
 	if cfg.ClientPasswordAction {
+		if cfg.ClientPassword == "" {
+			fmt.Fprintf(os.Stderr, "Password for %s: ", cfg.ClientUsername)
+			raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			cfg.ClientPassword = string(raw)
+		}
 		if err := config.StorePassword(config.ClientRealm, cfg.ClientUsername, cfg.ClientPassword); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+		fmt.Fprintf(os.Stdout, "Password saved for %s\n", cfg.ClientUsername)
 		return
 	}
 	if cfg.Quit {

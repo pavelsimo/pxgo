@@ -50,7 +50,23 @@ ranges, and host/domain suffixes.
 
 ## Upstream Authentication
 
-Set `--auth` to select upstream proxy authentication:
+Set `--auth` to select upstream proxy authentication. Store the password
+interactively in the OS keyring first:
+
+```bash
+./pxgo --username='DOMAIN\user' --password
+```
+
+Then run the proxy:
+
+```bash
+./pxgo \
+  --proxy=proxy.company.com:8080 \
+  --auth=NTLM \
+  --username='DOMAIN\user'
+```
+
+Or supply the password via environment variable for non-interactive runs:
 
 ```bash
 PXGO_PASSWORD='secret' ./pxgo \
