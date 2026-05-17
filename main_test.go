@@ -90,9 +90,9 @@ func TestCLIPasswordActionsUsePlaintextKeyring(t *testing.T) {
 	keyring := filepath.Join(t.TempDir(), "keyring.json")
 	cmd := exec.Command(bin, "--username=upstream-user", "--password")
 	cmd.Env = append(os.Environ(),
-		"PX_KEYRING_PLAINTEXT=1",
-		"PX_KEYRING_FILE="+keyring,
-		"PX_PASSWORD=upstream-pass",
+		"PXGO_KEYRING_PLAINTEXT=1",
+		"PXGO_KEYRING_FILE="+keyring,
+		"PXGO_PASSWORD=upstream-pass",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -100,9 +100,9 @@ func TestCLIPasswordActionsUsePlaintextKeyring(t *testing.T) {
 	}
 	cmd = exec.Command(bin, "--client_username=client-user", "--client-password")
 	cmd.Env = append(os.Environ(),
-		"PX_KEYRING_PLAINTEXT=1",
-		"PX_KEYRING_FILE="+keyring,
-		"PX_CLIENT_PASSWORD=client-pass",
+		"PXGO_KEYRING_PLAINTEXT=1",
+		"PXGO_KEYRING_FILE="+keyring,
+		"PXGO_CLIENT_PASSWORD=client-pass",
 	)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
@@ -248,7 +248,7 @@ func TestCLISelfTestAuthPassesClientCredentials(t *testing.T) {
 		"--test-auth",
 		"--test=all:http://target.invalid",
 	)
-	cmd.Env = append(os.Environ(), "PX_PASSWORD=12345")
+	cmd.Env = append(os.Environ(), "PXGO_PASSWORD=12345")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("self-test auth failed: %v\n%s", err, out)

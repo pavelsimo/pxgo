@@ -26,6 +26,8 @@ const (
 const LogStdoutTarget = "<stdout>"
 
 const (
+	envPrefix = "PXGO_"
+
 	keyServer         = "server"
 	keyPAC            = "pac"
 	keyPACEncoding    = "pac_encoding"
@@ -249,10 +251,10 @@ func GetHostIPs() []net.IP {
 func ParseArgs(args []string) (Config, error) {
 	cfg := Default()
 	dotenv := loadDotenv()
-	isSave := hasBareArg(args, "save") || truthy(os.Getenv("PX_SAVE")) || truthy(dotenv["save"])
+	isSave := hasBareArg(args, "save") || truthy(os.Getenv(envPrefix+"SAVE")) || truthy(dotenv["save"])
 	configPath := preScanConfigPath(args)
 	if configPath == "" {
-		configPath = os.Getenv("PX_CONFIG")
+		configPath = os.Getenv(envPrefix + "CONFIG")
 	}
 	if configPath == "" {
 		configPath = dotenv[keyConfig]
@@ -271,9 +273,9 @@ func ParseArgs(args []string) (Config, error) {
 			cfg.ConfigPath = loadPath
 		}
 	}
-	cfg.Password = os.Getenv("PX_PASSWORD")
-	cfg.ClientPassword = os.Getenv("PX_CLIENT_PASSWORD")
-	cfg.ClientUsername = os.Getenv("PX_CLIENT_USERNAME")
+	cfg.Password = os.Getenv(envPrefix + "PASSWORD")
+	cfg.ClientPassword = os.Getenv(envPrefix + "CLIENT_PASSWORD")
+	cfg.ClientUsername = os.Getenv(envPrefix + "CLIENT_USERNAME")
 	applyMap(&cfg, dotenv)
 	applyEnv(&cfg)
 	for _, arg := range args {
@@ -394,10 +396,10 @@ func hasBareArg(args []string, name string) bool {
 func applyEnv(cfg *Config) {
 	for _, item := range os.Environ() {
 		key, val, ok := strings.Cut(item, "=")
-		if !ok || val == "" || !strings.HasPrefix(key, "PX_") || len(key) <= 3 {
+		if !ok || val == "" || !strings.HasPrefix(key, envPrefix) || len(key) <= len(envPrefix) {
 			continue
 		}
-		_ = applyValue(cfg, strings.ToLower(key[3:]), val)
+		_ = applyValue(cfg, strings.ToLower(key[len(envPrefix):]), val)
 	}
 }
 
@@ -441,12 +443,12 @@ func loadDotenvFile(path string, values map[string]string) bool {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		if !strings.HasPrefix(key, "PX_") || os.Getenv(key) != "" {
+		if !strings.HasPrefix(key, envPrefix) || os.Getenv(key) != "" {
 			continue
 		}
 		val = strings.TrimSpace(val)
 		val = strings.Trim(val, `"'`)
-		values[strings.ToLower(key[3:])] = val
+		values[strings.ToLower(key[len(envPrefix):])] = val
 	}
 	return true
 }
@@ -562,8 +564,8 @@ func StorePassword(realm, username, password string) error {
 	if password == "" {
 		return errors.New("password is required")
 	}
-	if os.Getenv("PX_KEYRING_PLAINTEXT") != "1" {
-		return errors.New("no keyring backend configured; set PX_KEYRING_PLAINTEXT=1 for plaintext storage")
+	if os.Getenv(envPrefix+"KEYRING_PLAINTEXT") != "1" {
+		return errors.New("no keyring backend configured; set PXGO_KEYRING_PLAINTEXT=1 for plaintext storage")
 	}
 	path := keyringPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -585,7 +587,7 @@ func StorePassword(realm, username, password string) error {
 }
 
 func GetPassword(realm, username string) (string, bool) {
-	if username == "" || os.Getenv("PX_KEYRING_PLAINTEXT") != "1" {
+	if username == "" || os.Getenv(envPrefix+"KEYRING_PLAINTEXT") != "1" {
 		return "", false
 	}
 	raw, err := os.ReadFile(keyringPath())
@@ -601,7 +603,7 @@ func GetPassword(realm, username string) (string, bool) {
 }
 
 func keyringPath() string {
-	if path := os.Getenv("PX_KEYRING_FILE"); path != "" {
+	if path := os.Getenv(envPrefix + "KEYRING_FILE"); path != "" {
 		return path
 	}
 	return filepath.Join(GetConfigDir(), "keyring.json")

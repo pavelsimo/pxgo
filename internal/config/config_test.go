@@ -211,8 +211,8 @@ threads = 4
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PX_PORT", "2222")
-	t.Setenv("PX_THREADS", "8")
+	t.Setenv("PXGO_PORT", "2222")
+	t.Setenv("PXGO_THREADS", "8")
 	cfg, err := ParseArgs([]string{
 		"--config=" + path,
 		"--port=3333",
@@ -231,6 +231,18 @@ threads = 4
 	}
 	if cfg.Listen != "127.0.0.2" || cfg.Auth != "BASIC" {
 		t.Fatalf("config values not loaded: %#v", cfg)
+	}
+}
+
+func TestParseArgsIgnoresLegacyPXEnvironmentPrefix(t *testing.T) {
+	t.Setenv("PX_PORT", "2222")
+	t.Setenv("PXGO_PORT", "3333")
+	cfg, err := ParseArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Port != 3333 {
+		t.Fatalf("PXGO_ should be the only recognized application prefix, got port %d", cfg.Port)
 	}
 }
 
@@ -266,10 +278,10 @@ func TestParseArgsLoadsDotenvBeforeEnvironmentAndCLI(t *testing.T) {
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(".env", []byte("PX_PORT=4141\nPX_THREADS=7\nPX_USERNAME=dotenv-user\n"), 0o644); err != nil {
+	if err := os.WriteFile(".env", []byte("PXGO_PORT=4141\nPXGO_THREADS=7\nPXGO_USERNAME=dotenv-user\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PX_THREADS", "9")
+	t.Setenv("PXGO_THREADS", "9")
 	cfg, err := ParseArgs([]string{"--port=5151"})
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +311,7 @@ func TestDotenvCanSelectConfigFile(t *testing.T) {
 	if err := os.WriteFile(ini, []byte("[proxy]\nport = 6161\nserver = dotenv.proxy:80\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(".env", []byte("PX_CONFIG="+ini+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(".env", []byte("PXGO_CONFIG="+ini+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := ParseArgs(nil)
@@ -316,20 +328,20 @@ func TestExplicitMissingConfigErrorsUnlessSaving(t *testing.T) {
 	if _, err := ParseArgs([]string{"--config=" + missing}); err == nil {
 		t.Fatal("expected missing explicit config error")
 	}
-	t.Setenv("PX_CONFIG", missing)
+	t.Setenv("PXGO_CONFIG", missing)
 	if _, err := ParseArgs(nil); err == nil {
-		t.Fatal("expected missing PX_CONFIG error")
+		t.Fatal("expected missing PXGO_CONFIG error")
 	}
-	t.Setenv("PX_SAVE", "1")
+	t.Setenv("PXGO_SAVE", "1")
 	cfg, err := ParseArgs(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ConfigPath != missing {
-		t.Fatalf("PX_SAVE should allow missing PX_CONFIG: %#v", cfg)
+		t.Fatalf("PXGO_SAVE should allow missing PXGO_CONFIG: %#v", cfg)
 	}
-	t.Setenv("PX_CONFIG", "")
-	t.Setenv("PX_SAVE", "")
+	t.Setenv("PXGO_CONFIG", "")
+	t.Setenv("PXGO_SAVE", "")
 	cfg, err = ParseArgs([]string{"--save", "--config=" + missing})
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +395,7 @@ func TestParseArgsLoadsScriptDirDotenvFallback(t *testing.T) {
 	executablePath = func() (string, error) {
 		return filepath.Join(scriptDir, "pxgo"), nil
 	}
-	if err := os.WriteFile(filepath.Join(scriptDir, ".env"), []byte("PX_PORT=6161\nPX_USERNAME=script-dotenv\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(scriptDir, ".env"), []byte("PXGO_PORT=6161\nPXGO_USERNAME=script-dotenv\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := ParseArgs(nil)
@@ -469,8 +481,8 @@ func TestConfigPathForSavePrefersWritableExistingLocations(t *testing.T) {
 
 func TestPlaintextKeyringStoreAndLoad(t *testing.T) {
 	keyring := filepath.Join(t.TempDir(), "keyring.json")
-	t.Setenv("PX_KEYRING_PLAINTEXT", "1")
-	t.Setenv("PX_KEYRING_FILE", keyring)
+	t.Setenv("PXGO_KEYRING_PLAINTEXT", "1")
+	t.Setenv("PXGO_KEYRING_FILE", keyring)
 	if err := StorePassword(Realm, "upstream-user", "upstream-pass"); err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +502,7 @@ func TestPlaintextKeyringStoreAndLoad(t *testing.T) {
 }
 
 func TestPlaintextKeyringRequiresOptIn(t *testing.T) {
-	t.Setenv("PX_KEYRING_PLAINTEXT", "")
+	t.Setenv("PXGO_KEYRING_PLAINTEXT", "")
 	if err := StorePassword(Realm, "user", "pass"); err == nil {
 		t.Fatal("expected keyring opt-in error")
 	}
