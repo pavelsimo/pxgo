@@ -30,6 +30,7 @@ import (
 
 	"github.com/pavelsimo/pxgo/internal/config"
 	"github.com/pavelsimo/pxgo/internal/kerberos"
+	"github.com/pavelsimo/pxgo/internal/wproxy"
 )
 
 func startTestProxy(t *testing.T, cfg config.Config) *Server {
@@ -1744,6 +1745,25 @@ func TestGatewayHostonlyAllowsCustomAllowRules(t *testing.T) {
 	}
 }
 
+func TestQuitEndpointRequiresAllowedClient(t *testing.T) {
+	cfg := config.Default()
+	cfg.Allow = "10.0.*.*"
+	px := startTestProxy(t, cfg)
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/PxgoQuit", px.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%s, want 403", resp.Status)
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", px.Port()), 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("proxy stopped after forbidden quit: %v", err)
+	}
+	_ = conn.Close()
+}
+
 func TestQuitEndpointStopsProxy(t *testing.T) {
 	px := startTestProxy(t, config.Default())
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/PxgoQuit", px.Port()))
@@ -1764,6 +1784,92 @@ func TestQuitEndpointStopsProxy(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("proxy still accepts connections")
+}
+
+func TestKerberosPasswordFuncRefetchesKeyring(t *testing.T) {
+	t.Setenv("PXGO_KEYRING_PLAINTEXT", "1")
+	t.Setenv("PXGO_KEYRING_FILE", filepath.Join(t.TempDir(), "keyring.json"))
+	cfg := config.Default()
+	cfg.Kerberos = true
+	cfg.Username = "user@REALM"
+	cfg.Password = "startup"
+	if err := config.StorePassword(config.Realm, cfg.Username, "first"); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := buildKerberosManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Cleanup)
+	if got := mgr.PasswordFunc(); got == nil || *got != "first" {
+		t.Fatalf("password=%v, want first", got)
+	}
+	if err := config.StorePassword(config.Realm, cfg.Username, "second"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mgr.PasswordFunc(); got == nil || *got != "second" {
+		t.Fatalf("password=%v, want second", got)
+	}
+}
+
+func TestProxyReloadableModes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode int
+		pac  string
+		want bool
+	}{
+		{"config", wproxy.ModeConfig, "", false},
+		{"env", wproxy.ModeEnv, "", false},
+		{"local config pac", wproxy.ModeConfigPAC, "/tmp/proxy.pac", false},
+		{"http config pac", wproxy.ModeConfigPAC, "http://proxy/pac.js", true},
+		{"system manual", wproxy.ModeManual, "", true},
+		{"system pac", wproxy.ModePAC, "", true},
+		{"system auto", wproxy.ModeAuto, "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{cfg: config.Config{PAC: tc.pac}, w: &wproxy.Wproxy{Mode: tc.mode}}
+			if got := s.proxyReloadableLocked(); got != tc.want {
+				t.Fatalf("reloadable=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReplayableBodySpillsLargeBodiesToTempFile(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), maxMemoryBody+4096)
+	body, err := newReplayableBody(io.NopCloser(bytes.NewReader(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.path == "" {
+		t.Fatal("large body should spill to a temp file")
+	}
+	if body.Size() != int64(len(payload)) {
+		t.Fatalf("size=%d want %d", body.Size(), len(payload))
+	}
+	for i := 0; i < 2; i++ {
+		rc, err := body.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, payload) {
+			t.Fatal("replayed body mismatch")
+		}
+	}
+	path := body.path
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("temp body file still exists: %v", err)
+	}
 }
 
 func digestAuthHeader(uri, nonce string) string {

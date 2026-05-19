@@ -73,6 +73,9 @@ func TestCLISave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	if !strings.Contains(string(out), "Configuration saved to ") || !strings.Contains(string(out), "server = upstream.proxy.com:55112") {
+		t.Fatalf("save output missing confirmation or config:\n%s", out)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

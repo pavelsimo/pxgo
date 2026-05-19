@@ -316,25 +316,31 @@ func TestKinitRenew(t *testing.T) {
 
 func TestKinitWithPasswordCommandPaths(t *testing.T) {
 	mgr := makeManager()
-	var calls [][]string
+	var gotPrincipal string
 	withCommandRunner(t, func(timeout time.Duration, args []string, env map[string]string, stdin string) (commandResult, error) {
-		calls = append(calls, args)
-		if len(calls) == 1 {
-			if stdin != "secret\n" {
-				t.Fatalf("stdin=%q", stdin)
-			}
-			return commandResult{}, nil
+		if !reflect.DeepEqual(args, []string{"klist"}) {
+			t.Fatalf("args=%#v", args)
 		}
 		return commandResult{Stdout: mitKlistOutput}, nil
+	})
+	withKinitPasswordRunner(t, func(timeout time.Duration, principal string, env map[string]string, password string) (commandResult, error) {
+		gotPrincipal = principal
+		if env["KRB5CCNAME"] != mgr.CCacheName {
+			t.Fatalf("missing KRB5CCNAME in env")
+		}
+		if password != "secret" {
+			t.Fatalf("password=%q", password)
+		}
+		return commandResult{}, nil
 	})
 	if !mgr.KinitWithPassword() {
 		t.Fatal("kinit should succeed")
 	}
-	if mgr.Backoff != 0 || !reflect.DeepEqual(calls[0], []string{"kinit", "user@REALM"}) {
-		t.Fatalf("backoff=%s calls=%#v", mgr.Backoff, calls)
+	if mgr.Backoff != 0 || gotPrincipal != "user@REALM" {
+		t.Fatalf("backoff=%s principal=%q", mgr.Backoff, gotPrincipal)
 	}
 	none := New("user@REALM", func() *string { return nil }, false)
-	withCommandRunner(t, func(timeout time.Duration, args []string, env map[string]string, stdin string) (commandResult, error) {
+	withKinitPasswordRunner(t, func(timeout time.Duration, principal string, env map[string]string, password string) (commandResult, error) {
 		t.Fatal("command should not run without password")
 		return commandResult{}, nil
 	})
@@ -358,7 +364,7 @@ func TestKinitWithPasswordFailureBackoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mgr.Backoff = 0
-			withCommandRunner(t, func(timeout time.Duration, args []string, env map[string]string, stdin string) (commandResult, error) {
+			withKinitPasswordRunner(t, func(timeout time.Duration, principal string, env map[string]string, password string) (commandResult, error) {
 				return tc.result, tc.err
 			})
 			if mgr.KinitWithPassword() {
@@ -391,4 +397,11 @@ func withCommandRunner(t *testing.T, fn func(time.Duration, []string, map[string
 	old := commandRunner
 	commandRunner = fn
 	t.Cleanup(func() { commandRunner = old })
+}
+
+func withKinitPasswordRunner(t *testing.T, fn func(time.Duration, string, map[string]string, string) (commandResult, error)) {
+	t.Helper()
+	old := kinitPasswordRunner
+	kinitPasswordRunner = fn
+	t.Cleanup(func() { kinitPasswordRunner = old })
 }

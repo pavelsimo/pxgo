@@ -26,7 +26,10 @@ type commandResult struct {
 	ExitCode int
 }
 
-var commandRunner = defaultCommandRunner
+var (
+	commandRunner       = defaultCommandRunner
+	kinitPasswordRunner = defaultKinitPasswordRunner
+)
 
 type Manager struct {
 	Principal    string
@@ -182,7 +185,7 @@ func (m *Manager) KinitWithPassword() bool {
 	if password == nil {
 		return false
 	}
-	result, err := commandRunner(30*time.Second, []string{kinitCommand, m.Principal}, m.Env, *password+"\n")
+	result, err := kinitPasswordRunner(30*time.Second, m.Principal, m.Env, *password)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):

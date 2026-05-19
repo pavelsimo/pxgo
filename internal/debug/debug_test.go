@@ -75,3 +75,17 @@ func TestDebugGetPrint(t *testing.T) {
 		t.Fatalf("unexpected log: %q", data)
 	}
 }
+
+func TestLogPanicWritesFileWithoutDebug(t *testing.T) {
+	ResetForTest()
+	logfile := filepath.Join(t.TempDir(), "debug-main.log")
+	LogPanic(logfile, "boom")
+	data, err := os.ReadFile(logfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "Panic: boom") || !strings.Contains(text, "goroutine") {
+		t.Fatalf("unexpected panic log: %q", text)
+	}
+}

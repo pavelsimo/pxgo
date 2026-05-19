@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,6 +50,7 @@ const (
 	digestQopAuth    = "auth"
 	httpScheme       = "http"
 	httpsScheme      = "https"
+	maxMemoryBody    = 1 << 20
 )
 
 type Server struct {
@@ -131,12 +133,14 @@ func buildKerberosManager(cfg config.Config) (*kerberos.Manager, error) {
 	if cfg.Username == "" {
 		return nil, errors.New("--kerberos requires --username")
 	}
-	password := cfg.Password
 	return kerberos.New(cfg.Username, func() *string {
-		if password == "" {
+		if password, ok := config.GetPassword(config.Realm, cfg.Username); ok {
+			return &password
+		}
+		if cfg.Password == "" {
 			return nil
 		}
-		return &password
+		return &cfg.Password
 	}, kerberos.DetectHeimdal()), nil
 }
 
@@ -252,23 +256,29 @@ func (s *Server) Port() int {
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			debug.LogPanic(config.GetLogfile(config.LogCWD), recovered)
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+		}
+	}()
 	debug.Dprint(req.Method + " " + req.RequestURI)
 	if err := s.reloadProxyIfDue(); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.reloadKerberos(false)
+	if !s.isClientAllowed(req.RemoteAddr) {
+		debug.Dprint("client not allowed: " + req.RemoteAddr)
+		http.Error(rw, "forbidden", http.StatusForbidden)
+		return
+	}
 	if req.URL.Path == "/PxgoQuit" && req.Method == http.MethodGet {
 		rw.WriteHeader(http.StatusOK)
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			_ = s.Shutdown(context.Background())
 		}()
-		return
-	}
-	if !s.isClientAllowed(req.RemoteAddr) {
-		debug.Dprint("client not allowed: " + req.RemoteAddr)
-		http.Error(rw, "forbidden", http.StatusForbidden)
 		return
 	}
 	if s.clientAuthEnabled() && !s.authenticateClient(req) {
@@ -1021,11 +1031,12 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var body []byte
-	if req.Body != nil {
-		body, _ = io.ReadAll(req.Body)
-		_ = req.Body.Close()
+	body, err := newReplayableBody(req.Body)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
 	}
+	defer body.Close()
 	incomingProxyAuth := req.Header.Get("Proxy-Authorization")
 	resp, err := s.roundTripHTTPWithProxyFallback(req, u, body, targetURL, incomingProxyAuth, proxies)
 	if err != nil {
@@ -1040,7 +1051,7 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 	_, _ = io.Copy(rw, resp.Body)
 }
 
-func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, body []byte, targetURL, incomingProxyAuth string, proxies []wproxy.Server) (*http.Response, error) {
+func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, body *replayableBody, targetURL, incomingProxyAuth string, proxies []wproxy.Server) (*http.Response, error) {
 	candidates := proxyCandidates(proxies)
 	var lastErr error
 	for _, candidate := range candidates {
@@ -1051,7 +1062,11 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 		}
 		transport := s.httpTransportForProxy(candidate)
 		usesUpstreamProxy := candidate != wproxy.Direct
-		outReq := s.newOutboundRequest(req, u, body, "")
+		outReq, err := s.newOutboundRequest(req, u, body, "")
+		if err != nil {
+			lastErr = err
+			continue
+		}
 		if usesUpstreamProxy {
 			if auth := upstreamProxyAuthHeader(s.cfg, req.Method, targetURL, "", incomingProxyAuth); auth != "" {
 				outReq.Header.Set("Proxy-Authorization", auth)
@@ -1067,7 +1082,10 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 			continue
 		}
 		if usesUpstreamProxy && resp.StatusCode == http.StatusProxyAuthRequired {
-			resp = s.retryHTTPProxyAuth(transport, req, u, body, targetURL, incomingProxyAuth, resp)
+			resp, err = s.retryHTTPProxyAuth(transport, req, u, body, targetURL, incomingProxyAuth, resp)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return resp, nil
 	}
@@ -1109,7 +1127,7 @@ func proxyCandidates(proxies []wproxy.Server) []wproxy.Server {
 	return proxies
 }
 
-func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request, u *url.URL, body []byte, targetURL, passthroughAuth string, resp *http.Response) *http.Response {
+func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request, u *url.URL, body *replayableBody, targetURL, passthroughAuth string, resp *http.Response) (*http.Response, error) {
 	var session authSession
 	for attempts := 0; attempts < 3 && resp.StatusCode == http.StatusProxyAuthRequired; attempts++ {
 		debug.Dprint(fmt.Sprintf("HTTP proxy auth challenge (attempt %d): %s", attempts+1, targetURL))
@@ -1128,19 +1146,23 @@ func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request
 		}
 		if auth == "" {
 			s.forceKerberosReloadForUpstreamAuth(resp)
-			return resp
+			return resp, nil
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		nextReq := s.newOutboundRequest(req, u, body, auth)
-		nextResp, err := transport.RoundTrip(nextReq)
-		if err != nil {
-			return resp
+		nextReq, reqErr := s.newOutboundRequest(req, u, body, auth)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		nextResp, roundTripErr := transport.RoundTrip(nextReq)
+		if roundTripErr != nil {
+			debug.Dprint("HTTP proxy auth retry failed: " + roundTripErr.Error())
+			break
 		}
 		resp = nextResp
 	}
 	s.forceKerberosReloadForUpstreamAuth(resp)
-	return resp
+	return resp, nil
 }
 
 // sspiSessionAuth picks Negotiate or Authenticate depending on whether the
@@ -1153,16 +1175,16 @@ func sspiSessionAuth(session authSession, challenge string) (string, error) {
 	return session.Negotiate()
 }
 
-func (s *Server) newOutboundRequest(req *http.Request, u *url.URL, body []byte, proxyAuth string) *http.Request {
+func (s *Server) newOutboundRequest(req *http.Request, u *url.URL, body *replayableBody, proxyAuth string) (*http.Request, error) {
 	outReq := req.Clone(req.Context())
 	outReq.URL = u
 	outReq.RequestURI = ""
-	if len(body) == 0 {
-		outReq.Body = http.NoBody
-	} else {
-		outReq.Body = io.NopCloser(bytes.NewReader(body))
+	var err error
+	outReq.Body, err = body.Open()
+	if err != nil {
+		return nil, err
 	}
-	outReq.ContentLength = int64(len(body))
+	outReq.ContentLength = body.Size()
 	outReq.Header = cloneHeader(req.Header)
 	stripProxyHeaders(outReq.Header)
 	if s.cfg.UserAgent != "" {
@@ -1171,7 +1193,80 @@ func (s *Server) newOutboundRequest(req *http.Request, u *url.URL, body []byte, 
 	if proxyAuth != "" {
 		outReq.Header.Set("Proxy-Authorization", proxyAuth)
 	}
-	return outReq
+	return outReq, nil
+}
+
+type replayableBody struct {
+	data []byte
+	path string
+	size int64
+}
+
+func newReplayableBody(src io.ReadCloser) (*replayableBody, error) {
+	if src == nil || src == http.NoBody {
+		return &replayableBody{}, nil
+	}
+	defer src.Close()
+
+	var buf bytes.Buffer
+	n, err := io.CopyN(&buf, src, maxMemoryBody+1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if errors.Is(err, io.EOF) && n <= maxMemoryBody {
+		return &replayableBody{data: buf.Bytes(), size: n}, nil
+	}
+
+	file, err := os.CreateTemp("", "pxgo-body-*")
+	if err != nil {
+		return nil, err
+	}
+	path := file.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		return nil, err
+	}
+	copied, err := io.Copy(file, src)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	cleanup = false
+	return &replayableBody{path: path, size: n + copied}, nil
+}
+
+func (b *replayableBody) Open() (io.ReadCloser, error) {
+	if b == nil || b.size == 0 {
+		return http.NoBody, nil
+	}
+	if b.path != "" {
+		return os.Open(b.path)
+	}
+	return io.NopCloser(bytes.NewReader(b.data)), nil
+}
+
+func (b *replayableBody) Size() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.size
+}
+
+func (b *replayableBody) Close() error {
+	if b == nil || b.path == "" {
+		return nil
+	}
+	err := os.Remove(b.path)
+	b.path = ""
+	return err
 }
 
 func stripProxyHeaders(header http.Header) {

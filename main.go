@@ -30,26 +30,40 @@ const (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() (exitCode int) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			debug.LogPanic(config.GetLogfile(config.LogCWD), recovered)
+			exitCode = 1
+		}
+	}()
 	cfg, err := config.ParseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	if cfg.Help {
 		printHelp()
-		return
+		return 0
 	}
 	if cfg.Version {
 		fmt.Println(version)
-		return
+		return 0
 	}
 	if cfg.Save {
 		path := config.ConfigPathForSave(cfg.ConfigPath)
 		if err := config.SaveINI(path, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			return 2
 		}
-		return
+		fmt.Fprintf(os.Stdout, "Configuration saved to %s\n", path)
+		if data, err := os.ReadFile(path); err == nil {
+			fmt.Fprint(os.Stdout, string(data))
+		}
+		return 0
 	}
 	if cfg.Install {
 		cmd, err := winstartup.BuildRunCommand(os.Args[0], config.ConfigPathForSave(cfg.ConfigPath), func(path string) bool {
@@ -58,20 +72,20 @@ func main() {
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(6)
+			return 6
 		}
 		if err := installStartup(cmd, cfg.Force); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(6)
+			return 6
 		}
-		return
+		return 0
 	}
 	if cfg.Uninstall {
 		if err := uninstallStartup(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(6)
+			return 6
 		}
-		return
+		return 0
 	}
 	if cfg.PasswordAction {
 		if cfg.Password == "" {
@@ -80,16 +94,16 @@ func main() {
 			fmt.Fprintln(os.Stderr)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				os.Exit(2)
+				return 2
 			}
 			cfg.Password = string(raw)
 		}
 		if err := config.StorePassword(config.Realm, cfg.Username, cfg.Password); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			return 2
 		}
 		fmt.Fprintf(os.Stdout, "Password saved for %s\n", cfg.Username)
-		return
+		return 0
 	}
 	if cfg.ClientPasswordAction {
 		if cfg.ClientPassword == "" {
@@ -98,51 +112,52 @@ func main() {
 			fmt.Fprintln(os.Stderr)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				os.Exit(2)
+				return 2
 			}
 			cfg.ClientPassword = string(raw)
 		}
 		if err := config.StorePassword(config.ClientRealm, cfg.ClientUsername, cfg.ClientPassword); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			return 2
 		}
 		fmt.Fprintf(os.Stdout, "Password saved for %s\n", cfg.ClientUsername)
-		return
+		return 0
 	}
 	if cfg.Quit {
 		if err := quit(cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
+			return 3
 		}
-		return
+		return 0
 	}
 	if cfg.Restart {
 		if err := quit(cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
+			return 3
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if err := setupDebug(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	if cfg.Test != "" {
 		if err := runSelfTest(cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(4)
+			return 4
 		}
-		return
+		return 0
 	}
 	s, err := proxy.New(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	if err := s.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(5)
+		return 5
 	}
+	return 0
 }
 
 func setupDebug(cfg config.Config) error {
@@ -210,20 +225,72 @@ Options:
 }
 
 func quit(cfg config.Config) error {
-	listen := cfg.Listen
-	if listen == "" {
-		listen = localhostIP
-	}
-	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(listen, fmt.Sprint(cfg.Port)) + "/PxgoQuit")
-	if err != nil {
+	addr := net.JoinHostPort(listenForClient(cfg.Listen), fmt.Sprint(cfg.Port))
+	if err := waitForRunningProxy(addr); err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("quit failed: %s", resp.Status)
+	client := http.Client{Timeout: 2 * time.Second}
+	url := "http://" + addr + "/PxgoQuit"
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		resp, err := client.Get(url)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("quit failed: cannot quit pxgo on remote or disallowed host")
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("quit failed: %s", resp.Status)
+		}
+		if waitForClosed(addr, 2*time.Second) {
+			return nil
+		}
+		lastErr = fmt.Errorf("quit failed: proxy still running")
 	}
-	return nil
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("quit failed")
+}
+
+func waitForRunningProxy(addr string) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if isConnectionRefused(err) {
+			return fmt.Errorf("pxgo is not running")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("pxgo is not responding at %s", addr)
+}
+
+func waitForClosed(addr string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func isConnectionRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "connection refused")
 }
 
 func runSelfTest(cfg config.Config) error {

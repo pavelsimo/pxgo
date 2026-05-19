@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	runtimedebug "runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,18 @@ var instance *Debug
 func Pprint(objs ...any) {
 	defer func() { _ = recover() }()
 	fmt.Println(objs...)
+}
+
+func LogPanic(logPath string, recovered any) {
+	msg := fmt.Sprintf("\nPanic: %v\n%s", recovered, runtimedebug.Stack())
+	if instance != nil {
+		_, _ = instance.Write([]byte(msg))
+		return
+	}
+	_, _ = os.Stderr.Write([]byte(msg))
+	if logPath != "" {
+		_ = os.WriteFile(logPath, []byte(msg), 0o600)
+	}
 }
 
 func New(name string, appendMode bool) (*Debug, error) {
