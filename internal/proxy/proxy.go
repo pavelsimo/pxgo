@@ -130,13 +130,13 @@ func buildWproxy(cfg config.Config) (*wproxy.Wproxy, error) {
 }
 
 func buildKerberosManager(cfg config.Config) (*kerberos.Manager, error) {
-	if !cfg.Kerberos || runtime.GOOS == goosWindows {
+	if !cfg.Kerberos {
 		return nil, nil
 	}
 	if cfg.Username == "" {
 		return nil, errors.New("--kerberos requires --username")
 	}
-	return kerberos.New(cfg.Username, func() *string {
+	mgr := kerberos.New(cfg.Username, func() *string {
 		if password, ok := config.GetPassword(config.Realm, cfg.Username); ok {
 			return &password
 		}
@@ -144,7 +144,17 @@ func buildKerberosManager(cfg config.Config) (*kerberos.Manager, error) {
 			return nil
 		}
 		return &cfg.Password
-	}, kerberos.DetectHeimdal()), nil
+	}, kerberos.DetectHeimdal())
+	if runtime.GOOS == goosWindows {
+		failWithBackoff := func() bool {
+			mgr.Backoff = kerberos.CheckInterval
+			return false
+		}
+		mgr.KinitWithPasswordFunc = failWithBackoff
+		mgr.KinitRenewFunc = failWithBackoff
+		mgr.KlistValidFunc = func() bool { return false }
+	}
+	return mgr, nil
 }
 
 func (s *Server) ListenAddr() string {

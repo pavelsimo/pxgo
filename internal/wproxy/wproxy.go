@@ -247,26 +247,6 @@ func New(mode int, servers []Server, noproxy, pacEncoding string) (*Wproxy, erro
 		w.PAC = pac.New(servers[0].Host, pacEncoding)
 	}
 	if mode == ModeNone {
-		sysproxy := systemproxy.Discover()
-		switch {
-		case sysproxy.Found && sysproxy.AutoDetect:
-			w.Mode = ModeAuto
-			mergeNoProxy(w, sysproxy.Bypass)
-		case sysproxy.Found && sysproxy.IsPAC:
-			w.Mode = ModePAC
-			w.Servers = []Server{{Host: sysproxy.PACURL, Scheme: "pac"}}
-			mergeNoProxy(w, sysproxy.Bypass)
-		case sysproxy.Found:
-			parsed, err := ParseProxy(sysproxy.ManualProxy)
-			if err != nil {
-				return nil, err
-			}
-			w.Mode = ModeManual
-			w.Servers = parsed
-			mergeNoProxy(w, sysproxy.Bypass)
-		}
-	}
-	if mode == ModeNone && w.Mode == ModeNone {
 		if env := firstEnv("http_proxy", "HTTP_PROXY"); env != "" {
 			parsed, err := ParseProxy(env)
 			if err != nil {
@@ -281,6 +261,26 @@ func New(mode int, servers []Server, noproxy, pacEncoding string) (*Wproxy, erro
 				for h := range hosts2 {
 					w.NoProxyHosts[h] = true
 				}
+			}
+		}
+		if w.Mode == ModeNone {
+			sysproxy := systemproxy.Discover()
+			switch {
+			case sysproxy.Found && sysproxy.AutoDetect:
+				w.Mode = ModeAuto
+				mergeNoProxy(w, sysproxy.Bypass)
+			case sysproxy.Found && sysproxy.IsPAC:
+				w.Mode = ModePAC
+				w.Servers = []Server{{Host: sysproxy.PACURL, Scheme: "pac"}}
+				mergeNoProxy(w, sysproxy.Bypass)
+			case sysproxy.Found:
+				parsed, err := ParseProxy(sysproxy.ManualProxy)
+				if err != nil {
+					return nil, err
+				}
+				w.Mode = ModeManual
+				w.Servers = parsed
+				mergeNoProxy(w, sysproxy.Bypass)
 			}
 		}
 	}

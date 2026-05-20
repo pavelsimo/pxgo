@@ -1221,9 +1221,6 @@ func TestUnsupportedUpstreamAuthRejected(t *testing.T) {
 }
 
 func TestKerberosRequiresUsername(t *testing.T) {
-	if runtime.GOOS == goosWindows {
-		t.Skip("Kerberos manager is ignored on Windows")
-	}
 	cfg := config.Default()
 	cfg.Kerberos = true
 	if _, err := New(cfg); err == nil {
@@ -1788,9 +1785,6 @@ func TestQuitEndpointStopsProxy(t *testing.T) {
 }
 
 func TestKerberosPasswordFuncRefetchesKeyring(t *testing.T) {
-	if runtime.GOOS == goosWindows {
-		t.Skip("kerberos not supported on windows")
-	}
 	t.Setenv("PXGO_KEYRING_PLAINTEXT", "1")
 	t.Setenv("PXGO_KEYRING_FILE", filepath.Join(t.TempDir(), "keyring.json"))
 	cfg := config.Default()
