@@ -52,6 +52,7 @@ const (
 	httpScheme       = "http"
 	httpsScheme      = "https"
 	maxMemoryBody    = 1 << 20
+	goosWindows      = "windows"
 )
 
 type Server struct {
@@ -129,7 +130,7 @@ func buildWproxy(cfg config.Config) (*wproxy.Wproxy, error) {
 }
 
 func buildKerberosManager(cfg config.Config) (*kerberos.Manager, error) {
-	if !cfg.Kerberos || runtime.GOOS == "windows" {
+	if !cfg.Kerberos || runtime.GOOS == goosWindows {
 		return nil, nil
 	}
 	if cfg.Username == "" {

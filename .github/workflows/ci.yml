@@ -49,7 +49,7 @@ jobs:
 
       - name: Test
         if: runner.os == 'Windows'
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race ./...
 
       - name: Kerberos integration compile gate
         run: go test -tags=kerberos_integration ./internal/kerberos

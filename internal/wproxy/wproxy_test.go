@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -170,6 +171,9 @@ func TestWproxyNoProxyHostsStringCached(t *testing.T) {
 }
 
 func TestWproxyEnvProxyAndNoProxy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("system proxy discovery overrides env vars on windows")
+	}
 	t.Setenv("http_proxy", "")
 	t.Setenv("https_proxy", "")
 	t.Setenv("no_proxy", "")
@@ -199,6 +203,9 @@ func TestWproxyEnvProxyAndNoProxy(t *testing.T) {
 }
 
 func TestWproxyNoEnvProxy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("system proxy discovery overrides env vars on windows")
+	}
 	for _, key := range []string{"http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY"} {
 		old, ok := os.LookupEnv(key)
 		t.Cleanup(func() {

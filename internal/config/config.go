@@ -27,6 +27,8 @@ const (
 
 const LogStdoutTarget = "<stdout>"
 
+const goosWindows = "windows"
+
 const (
 	envPrefix = "PXGO_"
 
@@ -157,7 +159,7 @@ func Default() Config {
 }
 
 func GetConfigDir() string {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
 			return filepath.Join(appdata, "pxgo")
 		}
@@ -205,18 +207,22 @@ func GetLogfile(location int) string {
 }
 
 func FileURLToLocalPath(fileURL string) string {
-	u, err := url.Parse(fileURL)
+	normalized := strings.ReplaceAll(fileURL, "\\", "/")
+	u, err := url.Parse(normalized)
 	if err != nil {
 		return fileURL
 	}
 	path, _ := url.PathUnescape(u.Path)
-	if u.Host != "" {
-		return u.Host + path
+	var result string
+	switch {
+	case u.Host != "":
+		result = u.Host + path
+	case len(path) >= 3 && path[0] == '/' && path[2] == ':':
+		result = path[1:]
+	default:
+		result = path
 	}
-	if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-		return path[1:]
-	}
-	return path
+	return filepath.FromSlash(result)
 }
 
 func GetHostIPs() []net.IP {

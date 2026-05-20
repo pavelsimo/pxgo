@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -328,7 +329,11 @@ func TestCLISelfTestAuthPassesClientCredentials(t *testing.T) {
 
 func buildPx(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "pxgo")
+	name := "pxgo"
+	if runtime.GOOS == "windows" {
+		name = "pxgo.exe"
+	}
+	bin := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

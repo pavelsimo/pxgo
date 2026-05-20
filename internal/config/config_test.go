@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -21,7 +22,11 @@ func TestDefaults(t *testing.T) {
 
 func TestGetConfigDir(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
+	if runtime.GOOS == goosWindows {
+		t.Setenv("APPDATA", tmp)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", tmp)
+	}
 	got := GetConfigDir()
 	if got != filepath.Join(tmp, "pxgo") {
 		t.Fatalf("got %s", got)
@@ -466,7 +471,11 @@ func TestConfigPathForSavePrefersWritableExistingLocations(t *testing.T) {
 		t.Fatal(err)
 	}
 	configDir := filepath.Join(tmp, "xdg")
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if runtime.GOOS == goosWindows {
+		t.Setenv("APPDATA", configDir)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", configDir)
+	}
 	configINI := filepath.Join(configDir, "pxgo", "pxgo.ini")
 	if err := os.MkdirAll(filepath.Dir(configINI), 0o755); err != nil {
 		t.Fatal(err)
