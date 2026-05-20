@@ -55,6 +55,50 @@ func TestPacFindProxyForURL(t *testing.T) {
 	}
 }
 
+func TestPacCloseSafeWhenNotLoaded(t *testing.T) {
+	p := New(filepath.Join(t.TempDir(), "missing.pac"), "utf-8")
+	if p.Loaded() {
+		t.Fatal("PAC should not start loaded")
+	}
+	p.Close()
+	p.Close()
+	if p.Loaded() {
+		t.Fatal("PAC should remain unloaded after close")
+	}
+}
+
+func TestPacReloadAfterCloseUsesUpdatedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reload.pac")
+	if err := os.WriteFile(path, []byte(`function FindProxyForURL(url, host) { return "PROXY first.proxy:8080"; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := New(path, "utf-8")
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "first.proxy:8080" {
+		t.Fatalf("first load got %q", got)
+	}
+	if err := os.WriteFile(path, []byte(`function FindProxyForURL(url, host) { return "PROXY second.proxy:8080"; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "first.proxy:8080" {
+		t.Fatalf("loaded PAC should be cached before close, got %q", got)
+	}
+	p.Close()
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "second.proxy:8080" {
+		t.Fatalf("reload got %q", got)
+	}
+}
+
+func TestPacMalformedReturnPreservedForCallerParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "malformed.pac")
+	if err := os.WriteFile(path, []byte(`function FindProxyForURL(url, host) { return "NOT A PROXY"; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := New(path, "utf-8")
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "NOT A PROXY" {
+		t.Fatalf("PAC layer should preserve malformed return for caller parsing, got %q", got)
+	}
+}
+
 func TestPacLoadFromURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, simplePAC)

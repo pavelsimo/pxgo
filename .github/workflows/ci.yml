@@ -11,9 +11,13 @@ concurrency:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -24,20 +28,36 @@ jobs:
           cache: true
 
       - name: Install formatting tools
+        if: runner.os == 'Linux'
         run: |
           go install mvdan.cc/gofumpt@v0.7.0
           go install golang.org/x/tools/cmd/goimports@v0.29.0
 
       - name: Check formatting
+        if: runner.os == 'Linux'
         run: make fmt-check
 
       - name: Lint
+        if: runner.os == 'Linux'
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
 
       - name: Test
+        if: runner.os == 'Linux'
         run: make test
 
+      - name: Test
+        if: runner.os == 'Windows'
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Kerberos integration compile gate
+        run: go test -tags=kerberos_integration ./internal/kerberos
+
       - name: Build
+        if: runner.os == 'Linux'
         run: make build
+
+      - name: Build
+        if: runner.os == 'Windows'
+        run: go build -o bin/pxgo.exe .

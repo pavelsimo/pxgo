@@ -123,6 +123,106 @@ Go parses, stores, and round-trips these settings for config compatibility, but 
 
 ---
 
+## Testing Parity Coverage
+
+Feature parity is substantially covered, and the remaining px-python test areas now have pxgo coverage or an explicit opt-in/environment-gated path. Current rough coverage:
+
+| Suite | Test files | Test cases |
+| --- | ---: | ---: |
+| px-python | 9 | ~192 |
+| pxgo | 11 | ~164, including benchmarks and build-tagged integration tests |
+
+### ✓ Kerberos KDC integration tests — COVERED BY OPT-IN HARNESS
+
+px-python has real MIT and Heimdal KDC integration coverage in `tests/test_kerberos.py`, including raw `kinit`, manager acquisition, expiry parsing, renewal, ccache cleanup, wrong password, bad principal, klist validity, forced retry, and Heimdal-specific variants.
+
+pxgo now has:
+- default unit coverage for Kerberos state transitions and command handling
+- Unix PTY coverage for password-based `kinit`
+- env-gated KDC integration tests behind the `kerberos_integration` build tag
+- a `test-kerberos-integration` make target
+- a CI compile/skip gate for the build-tagged integration suite
+
+Run with:
+
+```bash
+PXGO_KERBEROS_PRINCIPAL=user@REALM \
+PXGO_KERBEROS_PASSWORD=secret \
+KRB5_CONFIG=/path/to/krb5.conf \
+PXGO_KERBEROS_FLAVOR=mit \
+go test -tags=kerberos_integration ./internal/kerberos
+```
+
+Use `PXGO_KERBEROS_FLAVOR=heimdal` for Heimdal client/KDC environments.
+
+Covered by `TestKerberosIntegrationKDC`, `TestKerberosIntegrationWrongPassword`, `TestDefaultKinitPasswordRunnerUsesPTY`, and the default Kerberos unit suite.
+
+---
+
+### ✓ Benchmark and resource-bound tests — COVERED
+
+px-python has explicit benchmark/resource tests in `tests/test_benchmark.py`: HTTP throughput, CONNECT throughput, bounded thread count, bounded memory, thread saturation, and active tunnel counts.
+
+pxgo now has:
+- `BenchmarkHTTPProxy`
+- `BenchmarkCONNECTProxy`
+- `TestResourceUsageBoundedUnderHTTPLoad`
+- `TestActiveTunnelCountTracksOpenCONNECTTunnels`
+- existing HTTP/CONNECT concurrency tests
+
+Run with:
+
+```bash
+go test -run 'Resource|ActiveTunnel' ./internal/proxy
+go test -bench 'HTTPProxy|CONNECTProxy' ./internal/proxy
+```
+
+---
+
+### ✓ Network CLI integration matrix — COVERED
+
+px-python's `tests/test_network.py` exercises quit, localhost-only listen, specific listen IP, hostonly binding, gateway binding, allow rules, subnet allow rules, and noproxy CLI acceptance as process-level integration tests.
+
+pxgo now has CLI process tests for quit, specific listen IP, gateway plus allow rejection, hostonly local proxying, and `noproxy` bypassing a configured proxy. Helper-level tests still cover allow subnet matching and host interface logic.
+
+Covered by `TestCLIQuitStopsRunningProxy`, `TestCLINetworkListenSpecificIP`, `TestCLINetworkGatewayAllowRejectsDisallowedClient`, `TestCLINetworkHostonlyAllowsLocalProxying`, `TestCLINetworkNoProxyBypassesConfiguredProxy`, and the allow/hostonly proxy tests.
+
+---
+
+### ✓ PAC lifecycle and edge-case tests — COVERED
+
+px-python's `tests/test_pac.py` includes resource cleanup checks such as `del` releasing PAC resources and safe deletion when not loaded, in addition to PAC parsing and helper behavior.
+
+pxgo now covers direct/proxy/multiple/SOCKS PAC outputs, unknown hosts, broken PAC fallback, encodings, DNS and IP helper functions, safe close before load, reload-after-close, and malformed PAC return handling through `wproxy`. Python destructor-only behavior is not applicable to Go.
+
+Covered by `internal/pac` tests and `TestWproxyConfigPACMalformedReturnFallsBackDirect`.
+
+---
+
+### ✓ Windows-specific integration tests — COVERED WHERE DETERMINISTIC
+
+pxgo has tests for startup command construction, SSPI stubs/build paths, and system proxy parsing helpers. The local Linux suite cannot verify Windows Credential Manager, Windows Internet Options reload, registry startup install/uninstall, or live SSPI negotiation.
+
+pxgo CI now runs the normal test suite on both `ubuntu-latest` and `windows-latest`. Deterministic Windows behavior is covered by startup command tests, system proxy parsing tests, and Windows compilation in CI. Live SSPI remains manual/environment-gated because it requires a domain-joined Windows environment.
+
+---
+
+### ✓ Cross-suite traceability — COVERED
+
+| px-python test file | pxgo equivalent | Status |
+| --- | --- | --- |
+| `test_config.py` | `internal/config/config_test.go`, `main_test.go` | covered |
+| `test_debug.py` | `internal/debug/debug_test.go`, `main_test.go` | covered |
+| `test_kerberos.py` | `internal/kerberos/*_test.go`, `internal/proxy/proxy_test.go`, `kerberos_integration` tag | covered; live KDC env-gated |
+| `test_large_data.py` | `internal/proxy/proxy_test.go` large transfer tests | covered |
+| `test_network.py` | `main_test.go`, `internal/proxy/proxy_test.go` | covered |
+| `test_pac.py` | `internal/pac/pac_test.go`, `internal/wproxy/wproxy_test.go` | covered |
+| `test_proxy.py` | `internal/proxy/proxy_test.go`, `main_test.go` | covered |
+| `test_wproxy.py` | `internal/wproxy/wproxy_test.go`, `internal/systemproxy/systemproxy_test.go` | covered |
+| `test_benchmark.py` | `internal/proxy/proxy_test.go` resource tests and benchmarks | covered |
+
+---
+
 ## Where Go Is Ahead
 
 | Area | Detail |

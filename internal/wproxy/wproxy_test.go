@@ -3,6 +3,7 @@ package wproxy
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,6 +43,12 @@ func TestParseProxy(t *testing.T) {
 func TestParseProxyBadPort(t *testing.T) {
 	if _, err := ParseProxy("proxy.com:notaport"); err == nil {
 		t.Fatal("expected bad port error")
+	}
+}
+
+func TestParseProxyBadHost(t *testing.T) {
+	if _, err := ParseProxy("NOT A PROXY"); err == nil {
+		t.Fatal("expected bad host error")
 	}
 }
 
@@ -126,6 +133,24 @@ func TestWproxyNoProxyStarBypassesAllHosts(t *testing.T) {
 		if !reflect.DeepEqual(servers, []Server{Direct}) {
 			t.Fatalf("%s should bypass, got %#v", rawurl, servers)
 		}
+	}
+}
+
+func TestWproxyConfigPACMalformedReturnFallsBackDirect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad-return.pac")
+	if err := os.WriteFile(path, []byte(`function FindProxyForURL(url, host) { return "NOT A PROXY"; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(ModeConfigPAC, []Server{{Host: path, Scheme: "pac"}}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, _, _, err := w.FindProxyForURL("http://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(servers, []Server{Direct}) {
+		t.Fatalf("malformed PAC return should fall back direct, got %#v", servers)
 	}
 }
 

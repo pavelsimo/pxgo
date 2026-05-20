@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -148,20 +150,7 @@ func TestCLIHelpAndVersion(t *testing.T) {
 func TestCLIQuitStopsRunningProxy(t *testing.T) {
 	bin := buildPx(t)
 	port := freePort(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--port="+fmt.Sprint(port), "--listen=127.0.0.1")
-	out := &strings.Builder{}
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		_ = cmd.Wait()
-	})
-	waitForPort(t, port)
+	cmd, out, _ := startPxProcess(t, bin, "--port="+fmt.Sprint(port), "--listen=127.0.0.1")
 	quit := exec.Command(bin, "--port="+fmt.Sprint(port), "--quit")
 	quitOut, err := quit.CombinedOutput()
 	if err != nil {
@@ -176,6 +165,85 @@ func TestCLIQuitStopsRunningProxy(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not stop after --quit")
+	}
+}
+
+func TestCLINetworkListenSpecificIP(t *testing.T) {
+	if os.Getenv("CI") == "true" && os.Getenv("RUN_LOOPBACK_ALIAS_TESTS") != "1" {
+		t.Skip("loopback aliases are environment-specific in CI")
+	}
+	bin := buildPx(t)
+	port := freePort(t)
+	cmd, out, cancel := startPxProcess(t, bin, "--port="+fmt.Sprint(port), "--listen=127.0.0.2")
+	defer cancel()
+	_ = cmd
+	if err := dialTCP("127.0.0.2", port); err != nil {
+		t.Fatalf("specific listen address did not accept connections: %v\n%s", err, out.String())
+	}
+	if err := dialTCP("127.0.0.1", port); err == nil {
+		t.Fatalf("proxy accepted 127.0.0.1 despite --listen=127.0.0.2\n%s", out.String())
+	}
+}
+
+func TestCLINetworkGatewayAllowRejectsDisallowedClient(t *testing.T) {
+	bin := buildPx(t)
+	port := freePort(t)
+	cmd, out, cancel := startPxProcess(t, bin, "--port="+fmt.Sprint(port), "--gateway", "--allow=10.0.*.*")
+	defer cancel()
+	_ = cmd
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", fmt.Sprint(port)) + "/")
+	if err != nil {
+		t.Fatalf("request failed: %v\n%s", err, out.String())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%s want 403\n%s", resp.Status, out.String())
+	}
+}
+
+func TestCLINetworkHostonlyAllowsLocalProxying(t *testing.T) {
+	bin := buildPx(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "hostonly ok")
+	}))
+	defer upstream.Close()
+	port := freePort(t)
+	cmd, out, cancel := startPxProcess(t, bin, "--port="+fmt.Sprint(port), "--hostonly")
+	defer cancel()
+	_ = cmd
+	resp, err := cliProxyClient(port).Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("proxied request failed: %v\n%s", err, out.String())
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != "hostonly ok" {
+		t.Fatalf("body=%q status=%s\n%s", data, resp.Status, out.String())
+	}
+}
+
+func TestCLINetworkNoProxyBypassesConfiguredProxy(t *testing.T) {
+	bin := buildPx(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "direct ok")
+	}))
+	defer upstream.Close()
+	port := freePort(t)
+	cmd, out, cancel := startPxProcess(t, bin,
+		"--port="+fmt.Sprint(port),
+		"--proxy=127.0.0.1:1",
+		"--noproxy=127.0.0.1",
+	)
+	defer cancel()
+	_ = cmd
+	resp, err := cliProxyClient(port).Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("proxied request failed: %v\n%s", err, out.String())
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != "direct ok" {
+		t.Fatalf("body=%q status=%s\n%s", data, resp.Status, out.String())
 	}
 }
 
@@ -279,9 +347,41 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func waitForPort(t *testing.T, port int) {
+func startPxProcess(t *testing.T, bin string, args ...string) (*exec.Cmd, *strings.Builder, context.CancelFunc) {
 	t.Helper()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	port := ""
+	listen := "127.0.0.1"
+	for _, arg := range args {
+		if value, ok := strings.CutPrefix(arg, "--port="); ok {
+			port = value
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--listen="); ok && value != "" {
+			listen = value
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, bin, args...)
+	out := &strings.Builder{}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Wait()
+	})
+	if port != "" {
+		waitForAddr(t, listen, mustAtoi(t, port))
+	}
+	return cmd, out, cancel
+}
+
+func waitForAddr(t *testing.T, host string, port int) {
+	t.Helper()
+	addr := net.JoinHostPort(host, fmt.Sprint(port))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
@@ -292,4 +392,29 @@ func waitForPort(t *testing.T, port int) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%s did not open", addr)
+}
+
+func cliProxyClient(port int) *http.Client {
+	u := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", fmt.Sprint(port))}
+	return &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(u),
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}, Timeout: 10 * time.Second}
+}
+
+func dialTCP(host string, port int) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), 300*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func mustAtoi(t *testing.T, value string) int {
+	t.Helper()
+	var out int
+	if _, err := fmt.Sscanf(value, "%d", &out); err != nil {
+		t.Fatalf("bad integer %q: %v", value, err)
+	}
+	return out
 }

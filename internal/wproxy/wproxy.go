@@ -151,6 +151,9 @@ func ParseProxy(proxystrs string) ([]Server, error) {
 				return nil, fmt.Errorf("bad proxy server port: %s", p)
 			}
 		}
+		if strings.ContainsAny(host, " \t\r\n") {
+			return nil, fmt.Errorf("bad proxy server host: %s", host)
+		}
 		key := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 		if !seen[key] {
 			servers = append(servers, Server{Host: host, Port: port, Scheme: scheme})

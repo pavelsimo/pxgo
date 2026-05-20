@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -69,6 +70,7 @@ type Server struct {
 	krb        *kerberos.Manager
 	closed     chan struct{}
 	once       sync.Once
+	active     int64
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -253,6 +255,10 @@ func (s *Server) Port() int {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.port
+}
+
+func (s *Server) ActiveTunnels() int64 {
+	return atomic.LoadInt64(&s.active)
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -1311,7 +1317,11 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 	_, _ = brw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	_ = brw.Flush()
 	debug.Dprint("CONNECT tunnel established: " + target)
-	go relay(client, upstream, time.Duration(s.cfg.Idle)*time.Second)
+	atomic.AddInt64(&s.active, 1)
+	go func() {
+		defer atomic.AddInt64(&s.active, -1)
+		relay(client, upstream, time.Duration(s.cfg.Idle)*time.Second)
+	}()
 }
 
 func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, proxies []wproxy.Server) (net.Conn, error) {

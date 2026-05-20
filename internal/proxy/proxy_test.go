@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1991,7 +1992,12 @@ func TestLargeHTTPAndHTTPS(t *testing.T) {
 	httpsUp := httptest.NewTLSServer(handler)
 	defer httpsUp.Close()
 	px := startTestProxy(t, config.Default())
-	client := proxyClient(t, px.Port())
+	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(px.Port()))}
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:             http.ProxyURL(proxyURL),
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		DisableKeepAlives: true,
+	}, Timeout: 20 * time.Second}
 	for _, target := range []string{httpUp.URL, httpsUp.URL} {
 		t.Run(target, func(t *testing.T) {
 			resp, err := client.Get(target)
@@ -2256,6 +2262,240 @@ func TestCONNECTThroughputConcurrencyLevels(t *testing.T) {
 			t.Logf("CONNECT concurrency %d: %d/%d succeeded, goroutines before=%d after=%d", conc, successes, len(results), before, runtime.NumGoroutine())
 		})
 	}
+}
+
+func TestResourceUsageBoundedUnderHTTPLoad(t *testing.T) {
+	httpUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1024))
+	}))
+	defer httpUp.Close()
+	px := startTestProxy(t, config.Default())
+	client := proxyClient(t, px.Port())
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	goroutinesBefore := runtime.NumGoroutine()
+
+	errs := make(chan error, 200)
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get(httpUp.URL)
+			if err != nil {
+				errs <- err
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errs <- errors.New(resp.Status)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tr, ok := client.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && (px.ActiveTunnels() != 0 || runtime.NumGoroutine() > goroutinesBefore+80) {
+		time.Sleep(25 * time.Millisecond)
+		runtime.GC()
+	}
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	if px.ActiveTunnels() != 0 {
+		t.Fatalf("active tunnels leaked: %d", px.ActiveTunnels())
+	}
+	if growth := int64(after.Alloc) - int64(before.Alloc); growth > 32*1024*1024 {
+		t.Fatalf("heap growth too high: %d bytes", growth)
+	}
+	if growth := runtime.NumGoroutine() - goroutinesBefore; growth > 1000 {
+		t.Fatalf("goroutine growth too high: before=%d after=%d", goroutinesBefore, runtime.NumGoroutine())
+	}
+}
+
+func TestActiveTunnelCountTracksOpenCONNECTTunnels(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstreamLn.Close()
+	var upstreamConns []net.Conn
+	var upstreamMu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for {
+			conn, err := upstreamLn.Accept()
+			if err != nil {
+				select {
+				case <-done:
+				default:
+					t.Logf("accept: %v", err)
+				}
+				return
+			}
+			upstreamMu.Lock()
+			upstreamConns = append(upstreamConns, conn)
+			upstreamMu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		close(done)
+		_ = upstreamLn.Close()
+		upstreamMu.Lock()
+		defer upstreamMu.Unlock()
+		for _, conn := range upstreamConns {
+			_ = conn.Close()
+		}
+	})
+
+	px := startTestProxy(t, config.Default())
+	const tunnels = 5
+	var clients []net.Conn
+	for i := 0; i < tunnels; i++ {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(px.Port())), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients = append(clients, conn)
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", upstreamLn.Addr().String(), upstreamLn.Addr().String())
+		br := bufio.NewReader(conn)
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(line, "200") {
+			t.Fatalf("CONNECT response %q", line)
+		}
+		for {
+			header, err := br.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header == "\r\n" {
+				break
+			}
+		}
+	}
+	t.Cleanup(func() {
+		for _, conn := range clients {
+			_ = conn.Close()
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && px.ActiveTunnels() != tunnels {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := px.ActiveTunnels(); got != tunnels {
+		t.Fatalf("active tunnels=%d want %d", got, tunnels)
+	}
+	for _, conn := range clients {
+		_ = conn.Close()
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && px.ActiveTunnels() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := px.ActiveTunnels(); got != 0 {
+		t.Fatalf("active tunnels after close=%d want 0", got)
+	}
+}
+
+func BenchmarkHTTPProxy(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer upstream.Close()
+	px := startBenchmarkProxy(b, config.Default())
+	defer func() { _ = px.Shutdown(context.Background()) }()
+	client := proxyClientForPort(px.Port())
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			resp, err := client.Get(upstream.URL)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	})
+}
+
+func BenchmarkCONNECTProxy(b *testing.B) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer upstream.Close()
+	px := startBenchmarkProxy(b, config.Default())
+	defer func() { _ = px.Shutdown(context.Background()) }()
+	client := proxyClientForPort(px.Port())
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			resp, err := client.Get(upstream.URL)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	})
+}
+
+func startBenchmarkProxy(b *testing.B, cfg config.Config) *Server {
+	b.Helper()
+	if cfg.Listen == "" {
+		cfg.Listen = "127.0.0.1"
+	}
+	cfg.Port = 0
+	if cfg.SockTimeout == 0 {
+		cfg.SockTimeout = 5
+	}
+	s, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- s.Start() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Port() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.Port() == 0 {
+		b.Fatal("proxy did not start")
+	}
+	b.Cleanup(func() {
+		_ = s.Shutdown(context.Background())
+		select {
+		case err := <-errc:
+			if err != nil {
+				b.Logf("proxy exit: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			b.Fatal("proxy did not stop")
+		}
+	})
+	return s
+}
+
+func proxyClientForPort(port int) *http.Client {
+	u := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
+	return &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(u),
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}, Timeout: 20 * time.Second}
 }
 
 func startTestSOCKS5(t *testing.T) string {
