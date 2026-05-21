@@ -42,54 +42,50 @@ jobs:
     name: Update Homebrew Tap
     runs-on: ubuntu-latest
     needs: goreleaser
-    if: "!contains(needs.goreleaser.outputs.tag, '-')"
+    if: ${{ !contains(needs.goreleaser.outputs.tag, '-') }}
     steps:
-      - name: Download checksums
-        run: |
-          TAG=${{ needs.goreleaser.outputs.tag }}
-          curl -fsSL "https://github.com/pavelsimo/pxgo/releases/download/${TAG}/checksums.txt" -o checksums.txt
-
-      - name: Extract SHA256 hashes
-        id: hashes
-        run: |
-          get_sha() { grep "$1" checksums.txt | awk '{print $1}'; }
-          echo "darwin_arm64=$(get_sha 'pxgo_darwin_arm64.tar.gz')"   >> "$GITHUB_OUTPUT"
-          echo "darwin_amd64=$(get_sha 'pxgo_darwin_amd64.tar.gz')"   >> "$GITHUB_OUTPUT"
-          echo "linux_arm64=$(get_sha 'pxgo_linux_arm64.tar.gz')"     >> "$GITHUB_OUTPUT"
-          echo "linux_amd64=$(get_sha 'pxgo_linux_amd64.tar.gz')"     >> "$GITHUB_OUTPUT"
-
-      - name: Update Homebrew tap
+      - name: Update formula
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.goreleaser.outputs.tag }}
         run: |
-          TAG=${{ needs.goreleaser.outputs.tag }}
-          VERSION=${TAG#v}
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/pavelsimo/homebrew-tap.git" /tmp/tap
-          cat > /tmp/tap/Formula/pxgo.rb <<EOF
+          VERSION="${TAG#v}"
+          BASE_URL="https://github.com/pavelsimo/pxgo/releases/download/${TAG}"
+
+          curl -sL "${BASE_URL}/checksums.txt" -o /tmp/checksums.txt
+
+          SHA_DARWIN_ARM64=$(grep "pxgo_darwin_arm64.tar.gz" /tmp/checksums.txt | awk '{print $1}')
+          SHA_DARWIN_AMD64=$(grep "pxgo_darwin_amd64.tar.gz" /tmp/checksums.txt | awk '{print $1}')
+          SHA_LINUX_ARM64=$(grep  "pxgo_linux_arm64.tar.gz"  /tmp/checksums.txt | awk '{print $1}')
+          SHA_LINUX_AMD64=$(grep  "pxgo_linux_amd64.tar.gz"  /tmp/checksums.txt | awk '{print $1}')
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/pavelsimo/homebrew-tap.git" /tmp/tap
+          mkdir -p /tmp/tap/Formula
+
+          cat > /tmp/tap/Formula/pxgo.rb << FORMULA
           class Pxgo < Formula
             desc "HTTP/HTTPS proxy with NTLM and Kerberos authentication"
             homepage "https://pavelsimo.github.io/pxgo"
+            license "MIT"
             version "${VERSION}"
 
             on_macos do
-              on_arm do
-                url "https://github.com/pavelsimo/pxgo/releases/download/${TAG}/pxgo_darwin_arm64.tar.gz"
-                sha256 "${{ steps.hashes.outputs.darwin_arm64 }}"
-              end
-              on_intel do
-                url "https://github.com/pavelsimo/pxgo/releases/download/${TAG}/pxgo_darwin_amd64.tar.gz"
-                sha256 "${{ steps.hashes.outputs.darwin_amd64 }}"
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/pxgo_darwin_arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+              else
+                url "${BASE_URL}/pxgo_darwin_amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD64}"
               end
             end
 
             on_linux do
-              on_arm do
-                url "https://github.com/pavelsimo/pxgo/releases/download/${TAG}/pxgo_linux_arm64.tar.gz"
-                sha256 "${{ steps.hashes.outputs.linux_arm64 }}"
-              end
-              on_intel do
-                url "https://github.com/pavelsimo/pxgo/releases/download/${TAG}/pxgo_linux_amd64.tar.gz"
-                sha256 "${{ steps.hashes.outputs.linux_amd64 }}"
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/pxgo_linux_arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "${BASE_URL}/pxgo_linux_amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
               end
             end
 
@@ -101,10 +97,11 @@ jobs:
               system "#{bin}/pxgo", "--version"
             end
           end
-          EOF
+          FORMULA
+
           cd /tmp/tap
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/pxgo.rb
-          git commit -m "chore: update pxgo to ${TAG}"
+          git diff --cached --quiet || git commit -m "Update pxgo to ${TAG}"
           git push
