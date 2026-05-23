@@ -18,6 +18,12 @@ Install on Windows with WinGet:
 winget install pavelsimo.pxgo
 ```
 
+Install on macOS or Linux with Homebrew:
+
+```bash
+brew install pavelsimo/tap/pxgo
+```
+
 Build and run from this repository:
 
 ```bash

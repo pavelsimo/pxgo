@@ -9,6 +9,14 @@ pxgo with:
 winget install pavelsimo.pxgo
 ```
 
+## macOS and Linux with Homebrew
+
+Install pxgo from the Homebrew tap:
+
+```bash
+brew install pavelsimo/tap/pxgo
+```
+
 ## From Source
 
 Requirements:
