@@ -358,6 +358,43 @@ func TestConnectIdleTimeoutClosesTunnel(t *testing.T) {
 	}
 }
 
+func TestConnectIdleTimeoutAllowsActiveOneWayDownload(t *testing.T) {
+	const chunks = 20
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < chunks; i++ {
+			if _, err := fmt.Fprintf(w, "chunk-%02d\n", i); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Idle = 1
+	px := startTestProxy(t, cfg)
+	client := proxyClient(t, px.Port())
+	resp, err := client.Get(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s body=%q", resp.Status, data)
+	}
+	if got := strings.Count(string(data), "chunk-"); got != chunks {
+		t.Fatalf("got %d chunks, want %d: %q", got, chunks, data)
+	}
+}
+
 func TestListenMultipleInterfaces(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "multi-listen ok")

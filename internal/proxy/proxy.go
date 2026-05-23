@@ -1865,31 +1865,81 @@ func canonicalConnectionAuthScheme(scheme string) string {
 
 func relay(a, b net.Conn, idle time.Duration) {
 	var wg sync.WaitGroup
+	closeOnce := sync.Once{}
+	closeConns := func() {
+		closeOnce.Do(func() {
+			_ = a.Close()
+			_ = b.Close()
+		})
+	}
+	done := make(chan struct{})
+	var activity chan struct{}
+	if idle > 0 {
+		activity = make(chan struct{}, 1)
+		go closeTunnelWhenIdle(idle, activity, done, closeConns)
+	}
+	touch := func() {
+		if activity == nil {
+			return
+		}
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
 	wg.Add(2)
 	cp := func(dst, src net.Conn) {
 		defer wg.Done()
-		if idle > 0 {
-			src = idleConn{Conn: src, idle: idle}
-		}
-		_, _ = io.Copy(dst, src)
-		_ = dst.SetDeadline(time.Now())
-		_ = src.SetDeadline(time.Now())
+		_, _ = copyWithActivity(dst, src, touch)
+		closeConns()
 	}
 	go cp(a, b)
 	go cp(b, a)
 	wg.Wait()
-	_ = a.Close()
-	_ = b.Close()
+	close(done)
+	closeConns()
 }
 
-type idleConn struct {
-	net.Conn
-	idle time.Duration
+func closeTunnelWhenIdle(idle time.Duration, activity <-chan struct{}, done <-chan struct{}, closeConns func()) {
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
+	for {
+		select {
+		case <-activity:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(idle)
+		case <-timer.C:
+			closeConns()
+			return
+		case <-done:
+			return
+		}
+	}
 }
 
-func (c idleConn) Read(p []byte) (int, error) {
-	_ = c.SetReadDeadline(time.Now().Add(c.idle))
-	return c.Conn.Read(p)
+func copyWithActivity(dst io.Writer, src io.Reader, touch func()) (int64, error) {
+	if touch == nil {
+		return io.Copy(dst, src)
+	}
+	return io.Copy(dst, activityReader{Reader: src, touch: touch})
+}
+
+type activityReader struct {
+	io.Reader
+	touch func()
+}
+
+func (r activityReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 {
+		r.touch()
+	}
+	return n, err
 }
 
 func cloneHeader(h http.Header) http.Header {
