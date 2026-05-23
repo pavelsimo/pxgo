@@ -44,3 +44,41 @@ release:
     name: pxgo
   draft: false
   prerelease: auto
+
+winget:
+  - name: pxgo
+    package_name: pxgo
+    package_identifier: pavelsimo.pxgo
+    publisher: pavelsimo
+    publisher_url: https://github.com/pavelsimo
+    publisher_support_url: https://github.com/pavelsimo/pxgo/issues
+    homepage: https://pavelsimo.github.io/pxgo
+    license: MIT
+    license_url: https://github.com/pavelsimo/pxgo/blob/main/LICENSE
+    copyright: Copyright (c) 2026 Pavel Simo
+    short_description: HTTP/HTTPS proxy with NTLM and Kerberos authentication
+    description: A single-binary HTTP/HTTPS proxy for developer machines, build agents, and local services that need to authenticate through corporate upstream proxies.
+    release_notes_url: https://github.com/pavelsimo/pxgo/releases/tag/{{ .Tag }}
+    installation_notes: pxgo installs as a portable CLI executable available on PATH.
+    tags:
+      - proxy
+      - ntlm
+      - kerberos
+      - cli
+    skip_upload: auto
+    commit_msg_template: "{{ .PackageIdentifier }}: {{ .Tag }}"
+    repository:
+      owner: pavelsimo
+      name: winget-pkgs
+      branch: "pxgo-{{ .Version }}"
+      token: "{{ .Env.WINGET_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: false
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+    commit_author:
+      name: github-actions[bot]
+      email: github-actions[bot]@users.noreply.github.com

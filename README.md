@@ -12,6 +12,12 @@ By default pxgo listens on `127.0.0.1:3128`.
 
 ## Quick Start
 
+Install on Windows with WinGet:
+
+```powershell
+winget install pavelsimo.pxgo
+```
+
 Build and run from this repository:
 
 ```bash

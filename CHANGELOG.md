@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add WinGet release publishing so Windows users can install pxgo with `winget install pavelsimo.pxgo`
+
 ## [0.3.0] - 2026-05-23
 
 ### Fixed

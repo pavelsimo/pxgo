@@ -1,5 +1,14 @@
 # Installation
 
+## Windows with WinGet
+
+After the WinGet manifest for a release passes Microsoft validation, install
+pxgo with:
+
+```powershell
+winget install pavelsimo.pxgo
+```
+
 ## From Source
 
 Requirements:
