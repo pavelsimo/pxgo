@@ -70,6 +70,41 @@ func TestParseNoProxy(t *testing.T) {
 	}
 }
 
+func TestParseNoProxyIPv6(t *testing.T) {
+	set, _, err := ParseNoProxy("2001:db8::/32,::1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"2001:db8::5", "2001:db8:ffff::1", "::1"} {
+		if !set.Contains(net.ParseIP(ip)) {
+			t.Fatalf("expected %s in noproxy set", ip)
+		}
+	}
+	for _, ip := range []string{"2001:db9::1", "::2", "10.0.0.1"} {
+		if set.Contains(net.ParseIP(ip)) {
+			t.Fatalf("unexpected %s in noproxy set", ip)
+		}
+	}
+}
+
+func TestLocalBypassCoversFullLoopbackBlock(t *testing.T) {
+	set, hosts, err := ParseNoProxy("<local>", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hosts["localhost"] {
+		t.Fatal("expected localhost host bypass")
+	}
+	for _, ip := range []string{"127.0.0.1", "127.5.0.1", "127.255.255.254"} {
+		if !set.Contains(net.ParseIP(ip)) {
+			t.Fatalf("expected %s in <local> bypass", ip)
+		}
+	}
+	if set.Contains(net.ParseIP("128.0.0.1")) {
+		t.Fatal("unexpected 128.0.0.1 in <local> bypass")
+	}
+}
+
 func TestParseNoProxyIPOnlyRejectsHost(t *testing.T) {
 	if _, _, err := ParseNoProxy("example.com", true); err == nil {
 		t.Fatal("expected host rejection")

@@ -45,16 +45,19 @@ type IPSet struct {
 }
 
 func (s *IPSet) AddCIDR(cidr string) error {
-	ip, ipnet, err := net.ParseCIDR(cidr)
+	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		ip = net.ParseIP(cidr)
+		ip := net.ParseIP(cidr)
 		if ip == nil {
 			return errors.New("bad ip")
 		}
-		mask := net.CIDRMask(32, 32)
-		ipnet = &net.IPNet{IP: ip.To4(), Mask: mask}
+		bits := 128
+		if ip4 := ip.To4(); ip4 != nil {
+			bits = 32
+			ip = ip4
+		}
+		ipnet = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
 	}
-	ipnet.IP = ip.To4()
 	s.nets = append(s.nets, ipnet)
 	return nil
 }
@@ -70,7 +73,6 @@ func (s *IPSet) AddRange(start, end string) error {
 }
 
 func (s IPSet) Contains(ip net.IP) bool {
-	ip = ip.To4()
 	if ip == nil {
 		return false
 	}
@@ -79,9 +81,12 @@ func (s IPSet) Contains(ip net.IP) bool {
 			return true
 		}
 	}
-	for _, r := range s.ranges {
-		if compareIP(ip, r[0]) >= 0 && compareIP(ip, r[1]) <= 0 {
-			return true
+	// Ranges are IPv4-only (see AddRange).
+	if ip4 := ip.To4(); ip4 != nil {
+		for _, r := range s.ranges {
+			if compareIP(ip4, r[0]) >= 0 && compareIP(ip4, r[1]) <= 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -178,7 +183,7 @@ func ParseNoProxy(noproxystr string, iponly bool) (IPSet, map[string]bool, error
 		}
 		if bypass == "<local>" {
 			hosts["localhost"] = true
-			_ = set.AddCIDR("127.0.0.0/24")
+			_ = set.AddCIDR("127.0.0.0/8")
 			continue
 		}
 		if bypass == "*" && !iponly {

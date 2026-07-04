@@ -695,6 +695,46 @@ func TestClientDigestRejectsBadNonce(t *testing.T) {
 	}
 }
 
+func TestClientDigestRejectsNonceReplay(t *testing.T) {
+	cfg := config.Default()
+	cfg.ClientAuth = "DIGEST"
+	cfg.ClientUsername = "test"
+	cfg.ClientPassword = "12345"
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := "127.0.0.1:54321"
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = remote
+	req.Header.Set("Proxy-Authorization", digestAuthHeader("http://example.test/", digestNonce(remote)))
+	if !s.checkDigestClientAuth(req) {
+		t.Fatal("first digest auth should succeed")
+	}
+	if s.checkDigestClientAuth(req) {
+		t.Fatal("replayed nonce/nc pair should be rejected")
+	}
+}
+
+func TestConnectTargetDefaultsPort(t *testing.T) {
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"example.com", "example.com:443"},
+		{"example.com:8443", "example.com:8443"},
+		{"[::1]", "[::1]:443"},
+		{"[::1]:8443", "[::1]:8443"},
+		{"::1", "[::1]:443"},
+		{"10.0.0.1", "10.0.0.1:443"},
+	}
+	for _, tt := range tests {
+		if got := connectTarget(tt.host); got != tt.want {
+			t.Errorf("connectTarget(%q) = %q, want %q", tt.host, got, tt.want)
+		}
+	}
+}
+
 func TestClientAnyAuthChallengesAndAcceptsBasic(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "any ok")
@@ -1218,11 +1258,32 @@ func TestUpstreamDigestAuthSelectsAuthQop(t *testing.T) {
 	if params["qop"] != "auth" {
 		t.Fatalf("got %q in %q", params["qop"], auth)
 	}
+	if len(params["nc"]) != 8 || params["cnonce"] == "" {
+		t.Fatalf("missing nc/cnonce: %#v", params)
+	}
 	ha1 := md5hex("test:PxClient:12345")
 	ha2 := md5hex(http.MethodGet + ":http://example.test/resource")
-	want := md5hex(ha1 + ":abc:00000001:pxgocnonce:auth:" + ha2)
+	want := md5hex(ha1 + ":abc:" + params["nc"] + ":" + params["cnonce"] + ":auth:" + ha2)
 	if params["response"] != want {
 		t.Fatalf("bad response: %#v", params)
+	}
+}
+
+func TestUpstreamDigestAuthNonceCountIncrements(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth = "DIGEST"
+	cfg.Username = "test"
+	cfg.Password = "12345"
+	challenges := []string{`Digest realm="PxClient", nonce="nc-increment-nonce", qop="auth"`}
+	first := parseAuthParams(strings.TrimPrefix(
+		UpstreamProxyAuthHeader(cfg, http.MethodGet, "http://example.test/a", challenges), "Digest "))
+	second := parseAuthParams(strings.TrimPrefix(
+		UpstreamProxyAuthHeader(cfg, http.MethodGet, "http://example.test/a", challenges), "Digest "))
+	if first["nc"] != "00000001" || second["nc"] != "00000002" {
+		t.Fatalf("nc should increment per request under one nonce: %q, %q", first["nc"], second["nc"])
+	}
+	if first["cnonce"] == "" || first["cnonce"] == second["cnonce"] {
+		t.Fatalf("cnonce should be random per request: %q, %q", first["cnonce"], second["cnonce"])
 	}
 }
 

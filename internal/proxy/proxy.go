@@ -560,7 +560,15 @@ func (s *Server) checkDigestClientAuth(req *http.Request) bool {
 	} else {
 		expected = md5hex(ha1 + ":" + nonce + ":" + ha2)
 	}
-	return subtleEqualHex(response, expected)
+	if !subtleEqualHex(response, expected) {
+		return false
+	}
+	// Reject replays of a verified nonce/nc pair (only detectable with qop,
+	// where the client must increment nc per request).
+	if qop != "" && digestNonceReplayed(nonce, nc) {
+		return false
+	}
+	return true
 }
 
 func (s *Server) checkNTLMClientAuth(req *http.Request, expectedScheme string) bool {
@@ -983,8 +991,11 @@ func digestNonce(remoteAddr string) string {
 		host = remoteAddr
 	}
 	ts := time.Now().Unix()
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", ts, host, digestRealm)))
-	raw := fmt.Sprintf("%d:%s", ts, hex.EncodeToString(sum[:]))
+	// The random salt makes each issued nonce unique, so nonce/nc replay
+	// tracking cannot collide across clients behind the same address.
+	salt := newCnonce()
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%s", ts, salt, host, digestRealm)))
+	raw := fmt.Sprintf("%d:%s:%s", ts, salt, hex.EncodeToString(sum[:]))
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
@@ -993,23 +1004,84 @@ func verifyDigestNonce(nonce, remoteAddr string) bool {
 	if err != nil {
 		return false
 	}
-	tsText, hash, ok := strings.Cut(string(raw), ":")
-	if !ok {
+	parts := strings.SplitN(string(raw), ":", 3)
+	if len(parts) != 3 {
 		return false
 	}
+	tsText, salt, hash := parts[0], parts[1], parts[2]
 	ts, err := strconv.ParseInt(tsText, 10, 64)
 	if err != nil {
 		return false
 	}
-	if time.Since(time.Unix(ts, 0)) > 120*time.Second {
+	if time.Since(time.Unix(ts, 0)) > digestNonceLifetime {
 		return false
 	}
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		host = remoteAddr
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", ts, host, digestRealm)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%s", ts, salt, host, digestRealm)))
 	return subtleEqualHex(hash, hex.EncodeToString(sum[:]))
+}
+
+// digestNonceLifetime bounds both client nonce validity and the retention of
+// the digest bookkeeping maps below.
+const digestNonceLifetime = 120 * time.Second
+
+type digestNonceCount struct {
+	count   atomic.Uint64
+	created time.Time
+}
+
+var (
+	digestNonceCounts sync.Map // upstream server nonce -> *digestNonceCount
+	seenClientNonces  sync.Map // client "nonce|nc" -> expiry time.Time
+	digestLastPrune   atomic.Int64
+)
+
+// nextDigestNC returns the next nonce-count for the given upstream server
+// nonce, as RFC 7616 requires it to increment per request under one nonce.
+func nextDigestNC(nonce string) string {
+	v, _ := digestNonceCounts.LoadOrStore(nonce, &digestNonceCount{created: time.Now()})
+	pruneDigestMaps()
+	return fmt.Sprintf("%08x", v.(*digestNonceCount).count.Add(1))
+}
+
+// digestNonceReplayed records a verified client nonce/nc pair and reports
+// whether it was already seen within the nonce lifetime.
+func digestNonceReplayed(nonce, nc string) bool {
+	_, loaded := seenClientNonces.LoadOrStore(nonce+"|"+nc, time.Now().Add(digestNonceLifetime))
+	pruneDigestMaps()
+	return loaded
+}
+
+// pruneDigestMaps drops expired entries from both digest maps, at most once
+// per lifetime window, keeping them bounded without a background goroutine.
+func pruneDigestMaps() {
+	now := time.Now()
+	last := digestLastPrune.Load()
+	if now.Unix()-last < int64(digestNonceLifetime/time.Second) ||
+		!digestLastPrune.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	digestNonceCounts.Range(func(k, v any) bool {
+		if now.Sub(v.(*digestNonceCount).created) > digestNonceLifetime {
+			digestNonceCounts.Delete(k)
+		}
+		return true
+	})
+	seenClientNonces.Range(func(k, v any) bool {
+		if now.After(v.(time.Time)) {
+			seenClientNonces.Delete(k)
+		}
+		return true
+	})
+}
+
+func newCnonce() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func parseAuthParams(header string) map[string]string {
@@ -1434,11 +1506,17 @@ func stripProxyHeaders(header http.Header) {
 	}
 }
 
-func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
-	target := req.Host
-	if !strings.Contains(target, ":") {
-		target += ":443"
+// connectTarget defaults the port to 443 when the CONNECT host has none,
+// including bracketed IPv6 literals like "[::1]".
+func connectTarget(host string) string {
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		return net.JoinHostPort(strings.Trim(host, "[]"), "443")
 	}
+	return host
+}
+
+func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
+	target := connectTarget(req.Host)
 	debug.Dprint("CONNECT target: " + target)
 	proxies, _, _, err := s.currentWproxy().FindProxyForURL("https://" + target)
 	if err != nil {
@@ -1819,8 +1897,6 @@ func upstreamProxyAuthHeader(cfg config.Config, method, uri, challenge, passthro
 		if realm == "" || nonce == "" {
 			return ""
 		}
-		nc := "00000001"
-		cnonce := "pxgocnonce"
 		ha1 := md5hex(cfg.Username + ":" + realm + ":" + cfg.Password)
 		ha2 := md5hex(method + ":" + uri)
 		if qop == "" {
@@ -1828,6 +1904,8 @@ func upstreamProxyAuthHeader(cfg config.Config, method, uri, challenge, passthro
 			return fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s"`,
 				cfg.Username, realm, nonce, uri, response)
 		}
+		nc := nextDigestNC(nonce)
+		cnonce := newCnonce()
 		response := md5hex(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2)
 		return fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", qop=%s, nc=%s, cnonce="%s", response="%s"`,
 			cfg.Username, realm, nonce, uri, qop, nc, cnonce, response)
