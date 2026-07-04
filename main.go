@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pavelsimo/pxgo/internal/config"
@@ -153,9 +155,24 @@ func run() (exitCode int) {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if err := s.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 5
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errc := make(chan error, 1)
+	go func() { errc <- s.Start() }()
+	select {
+	case err := <-errc:
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 5
+		}
+	case <-ctx.Done():
+		debug.Dprint("shutdown signal received")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
+	}
+	if d := debug.Instance(); d != nil {
+		_ = d.Close()
 	}
 	return 0
 }
