@@ -13,7 +13,7 @@ ifeq ($(GO_BIN),)
 GO_BIN                := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install test test-kerberos-integration coverage lint fmt fmt-check ci release clean tools hooks docs help
+.PHONY: build install test test-kerberos-integration bench coverage lint fmt fmt-check ci release clean tools hooks docs help
 
 build: ## Build binary to bin/
 	@mkdir -p $(BUILD_DIR)
@@ -27,6 +27,9 @@ test: ## Run tests with race detector and coverage
 
 test-kerberos-integration: ## Run env-gated Kerberos KDC integration tests
 	go test -tags=kerberos_integration ./internal/kerberos
+
+bench: ## Run proxy micro-benchmarks (see docs/benchmarking.md)
+	go test -bench 'HTTPProxy|CONNECTProxy' -benchmem -count 5 -run '^$$' ./internal/proxy
 
 coverage: test ## Open coverage report in browser
 	go tool cover -html=coverage.out

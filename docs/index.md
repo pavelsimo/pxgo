@@ -37,6 +37,7 @@ pxgo --pac=http://proxy.company.com/proxy.pac
 - [Architecture](architecture.md)
 - [Build](build.md)
 - [Testing](testing.md)
+- [Benchmarking](benchmarking.md)
 
 ## What pxgo handles
 
