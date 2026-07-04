@@ -44,6 +44,10 @@ Run with an explicit upstream proxy:
 pxgo --proxy=proxy.company.com:8080
 ```
 
+On domain-joined Windows machines pxgo authenticates to the upstream proxy
+with the logged-in user's credentials via SSPI — no `--username` or stored
+password needed.
+
 Run with a PAC file:
 
 ```bash
@@ -58,7 +62,7 @@ pxgo --test
 pxgo --test=all:https://httpbin.org
 ```
 
-Stop a running instance:
+Stop a running instance (sends `GET /PxgoQuit` to the listen address):
 
 ```bash
 pxgo --quit
@@ -87,6 +91,11 @@ pxgo --config=./pxgo.ini
 
 The repository includes a commented sample config at [pxgo.ini](pxgo.ini).
 
+Passwords stored with `--password`/`--client-password` go to the OS keyring
+(Credential Manager, Keychain, or libsecret). Set `PXGO_KEYRING_PLAINTEXT=1`
+to use a plaintext file instead (for Docker/CI), and `PXGO_KEYRING_FILE=PATH`
+to choose where it lives — see [docs/configuration.md](docs/configuration.md).
+
 ## Common Flags
 
 | Flag | Purpose |
@@ -114,6 +123,7 @@ Use `pxgo --help` for the current CLI help.
 - [Architecture](docs/architecture.md)
 - [Build](docs/build.md)
 - [Testing](docs/testing.md)
+- [Benchmarking](docs/benchmarking.md)
 
 ## Docker
 

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Handle SIGINT/SIGTERM with a graceful, bounded shutdown that drains in-flight requests
+- Add a benchmark harness: `make bench`, `scripts/bench-e2e.sh` (vs Python px), and `docs/benchmarking.md`
+
+### Changed
+- Reuse upstream connections via cached keep-alive transports keyed by proxy candidate
+- Compile PAC scripts once and evaluate them on a pooled set of JavaScript VMs, removing the global PAC lock
+- Cache DNS lookups used by `--noproxy` matching and PAC `dnsResolve()` (new `internal/dnscache`)
+- Stream request bodies straight through unless an upstream auth retry could need a replay
+- Rewrite the CONNECT relay to preserve the kernel `splice(2)` fast path and half-close each direction independently
+- Run proxy reload and Kerberos ticket checks on a background ticker instead of per request; a failed reload now keeps the previous proxy config and logs the error instead of returning 502
+- Reload the proxy configuration outside the routing lock and keep warm connections unless the routing actually changed
+
+### Fixed
+- Forward client bytes pipelined behind a CONNECT request (fixes stalled TLS handshakes)
+- Deliver upstream bytes that arrive together with the CONNECT response (fixes server-speaks-first protocols such as SMTP)
+- Pin NTLM/Negotiate upstream authentication to a single connection
+- Match IPv6 addresses and CIDRs in `--noproxy` and `--allow`
+- Default CONNECT requests to bracketed IPv6 literals without a port to port 443
+- Bypass the whole `127.0.0.0/8` loopback block for `<local>`
+- Send an incrementing nonce count and random cnonce in upstream Digest authentication
+- Reject replayed client Digest nonce/nc pairs and add PAC fetch timeouts with retry backoff
+
 ## [0.4.0] - 2026-05-23
 
 ### Added

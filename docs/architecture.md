@@ -23,6 +23,7 @@ The Go port is organized around one main binary and small internal packages.
 | `internal/proxy` | HTTP proxy, CONNECT tunnels, auth, allow rules, reload behavior |
 | `internal/wproxy` | Proxy discovery model, manual proxy parsing, bypass rules |
 | `internal/pac` | PAC loading, JavaScript execution, Mozilla PAC helper functions |
+| `internal/dnscache` | TTL cache in front of `net.LookupIP` (60 s hits, 5 s misses, 4096-entry cap), shared by noproxy matching and PAC `dnsResolve()` |
 | `internal/kerberos` | `kinit`/`klist` orchestration and ticket refresh state |
 | `internal/debug` | Debug logging |
 | `internal/systemproxy` | Platform system proxy discovery |
@@ -30,13 +31,32 @@ The Go port is organized around one main binary and small internal packages.
 
 ## State And Concurrency
 
-The proxy server runs one `http.Server` over one or more listeners. Shared proxy
-state is guarded by mutexes:
+The proxy server runs one `http.Server` over one or more listeners.
 
 - listener/server/port state is guarded by `stateMu`
-- PAC/system proxy reload state is guarded by `wmu`
-- per-connection client auth state is guarded by `clientMu`
+- the active wproxy is guarded by `wmu`; reloads rebuild outside the lock and
+  swap under it, so requests never wait on a PAC download
+- per-connection client auth state lives in a `sync.Map` of `clientState`
+  entries keyed by remote address, dropped when the connection closes
 - Kerberos check and renewal state is guarded by the Kerberos manager mutex
+
+Time-based housekeeping (proxy reload, Kerberos ticket refresh) runs on a
+background one-second ticker owned by `Start`/`Shutdown`, not on the request
+path. A failed reload is logged and the previous proxy config stays active.
+
+## Performance Notes
+
+- `http.Transport`s are cached per proxy candidate (`DIRECT` or
+  `scheme://host:port`, capped at 64) so upstream connections are reused via
+  keep-alive; the cache is dropped only when a reload changes the routing.
+- PAC scripts are compiled once to a `goja.Program`; evaluation draws VMs from
+  a `sync.Pool`, so lookups run in parallel without a shared-VM lock.
+- DNS lookups for noproxy matching and PAC `dnsResolve()` go through
+  `internal/dnscache`.
+- CONNECT relays keep both ends as raw `*net.TCPConn` so `io.Copy` can use
+  `splice(2)` on Linux; idle detection uses read deadlines, and each direction
+  half-closes independently (`CloseWrite`) so early EOF on one side does not
+  truncate the other.
 
 The test suite includes race-detector coverage for the proxy and Kerberos
 packages.

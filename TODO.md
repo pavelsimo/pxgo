@@ -6,9 +6,11 @@ The hot path is `ServeHTTP` (`internal/proxy/proxy.go`) → PAC/wproxy lookup
 (`internal/pac/pac.go`, `internal/wproxy/wproxy.go`) → upstream dial/round-trip →
 CONNECT relay. Performance items are ordered by expected gain.
 
-**Status legend:** ✅ implemented in the current working tree (uncommitted) ·
-❌ still open. Line numbers on ✅ items refer to the pre-fix code and are kept
-for history; open items have refreshed references.
+**Status legend:** ✅ implemented (committed) · ❌ still open. Line numbers on
+✅ items refer to the pre-fix code and are kept for history. Note: `proxy.go`
+was since split into multiple files (A1), so `proxy.go:NNN` references map to
+`transport.go` / `auth_client.go` / `auth_upstream.go` / `connect.go` /
+`relay.go` / `body.go`.
 
 ---
 
@@ -16,7 +18,7 @@ for history; open items have refreshed references.
 
 ### P1. New `http.Transport` created per request — no upstream connection reuse (`internal/proxy/proxy.go:1080`, `internal/proxy/proxy.go:1116`)
 
-**Status: ✅ implemented (uncommitted)** — `Server.transports sync.Map` +
+**Status: ✅ implemented** — `Server.transports sync.Map` +
 `httpTransportForProxy` (`proxy.go:1185`); cleared on `Shutdown` and on proxy
 reload. See P12 for a follow-up on the eviction policy.
 
@@ -85,7 +87,7 @@ with B4 (NTLM connection pinning) — see below before implementing.
 
 ### P2. PAC evaluation fully serialized behind one mutex and one goja VM (`internal/pac/pac.go:20-26`, `internal/pac/pac.go:99`)
 
-**Status: ✅ implemented (uncommitted)** — compiled `*goja.Program` + per-runtime
+**Status: ✅ implemented** — compiled `*goja.Program` + per-runtime
 `sync.Pool` of VMs (`pacRuntime` in `pac.go`); evaluation is lock-free.
 
 **Why?** Every request — HTTP *and* CONNECT — runs `Pac.FindProxyForURL`, which takes
@@ -161,7 +163,7 @@ cache) so PAC files that resolve the same hosts repeatedly don't hammer DNS.
 
 ### P3. Failed PAC load is retried on every request with an HTTP GET that has **no timeout**, while holding the PAC mutex (`internal/pac/pac.go:48-97`)
 
-**Status: ✅ implemented (uncommitted)** — `pacHTTPTimeout` (10 s) on the fetch
+**Status: ✅ implemented** — `pacHTTPTimeout` (10 s) on the fetch
 client, `pacRetryInterval` (30 s) backoff in `ensureLoaded`.
 
 **Why?** `loadLocked` runs on every `FindProxyForURL` while `p.fn == nil`. If the PAC
@@ -205,7 +207,7 @@ func (p *Pac) readPACData() ([]byte, error) {
 
 ### P4. Every HTTP request body is fully buffered — up to 1 MB in RAM, then spilled to a temp file on disk (`internal/proxy/proxy.go:1051`, `internal/proxy/proxy.go:1222-1261`)
 
-**Status: ✅ implemented (uncommitted)** — `mayRetryUpstreamAuth` gates
+**Status: ✅ implemented** — `mayRetryUpstreamAuth` gates
 `newReplayableBody`; DIRECT/no-auth requests stream the body through.
 
 **Why?** `handleHTTP` calls `newReplayableBody(req.Body)` unconditionally so the body
@@ -271,7 +273,7 @@ mid-body failures can't fall back — same trade-off every streaming proxy makes
 
 ### P5. Blocking, uncached DNS lookup on the hot path for noproxy matching (`internal/wproxy/wproxy.go:398-419`)
 
-**Status: ✅ implemented (uncommitted)** — new `internal/dnscache` package
+**Status: ✅ implemented** — new `internal/dnscache` package
 (60 s hit TTL, 5 s negative TTL, 4096-entry cap), shared by `wproxy` noproxy
 matching and PAC `dnsResolve()`. Remember to document it (see D2).
 
@@ -324,7 +326,7 @@ too. Add a size cap (e.g. evict when > 4096 entries) to bound memory.
 
 ### P6. `activityReader` defeats kernel `splice()` zero-copy in CONNECT tunnels (`internal/proxy/proxy.go:1866-1943`)
 
-**Status: ✅ implemented (uncommitted)** — `activityReader` deleted; relay uses
+**Status: ✅ implemented** — `activityReader` deleted; relay uses
 read-deadline idle detection so `io.Copy` keeps the splice fast path.
 
 **Why?** CONNECT tunnels carry virtually all HTTPS traffic — i.e. most of the bytes
@@ -384,7 +386,7 @@ seconds to check for progress. If your goja/pac work lands first, benchmark this
 
 ### P7. Debug logging costs are paid even when logging is disabled; `fsync` per log line when enabled (`internal/debug/debug.go:99-137` and hot-path call sites e.g. `internal/proxy/proxy.go:1045`, `internal/proxy/proxy.go:1065`, `internal/proxy/proxy.go:1078`)
 
-**Status: ✅ implemented (uncommitted)** — `debug.Dprintf`/`debug.Enabled` for
+**Status: ✅ implemented** — `debug.Dprintf`/`debug.Enabled` for
 lazy formatting; per-line `Sync()` removed (panic path still syncs explicitly).
 
 **Why?** Two separate problems:
@@ -435,7 +437,7 @@ of per line.
 
 ### P8. Static config re-parsed on every request (`internal/proxy/proxy.go:301`, `proxy.go:327`, `proxy.go:336`, `proxy.go:454`, `proxy.go:1621`)
 
-**Status: ✅ implemented (uncommitted)** — `clientAuthList`, `upstreamAuths`,
+**Status: ✅ implemented** — `clientAuthList`, `upstreamAuths`,
 `allowSet`, and `hostIPs` are precomputed on `Server` in `New()`.
 
 **Why?** Several pure functions of immutable config run per request:
@@ -485,8 +487,8 @@ func New(cfg config.Config) (*Server, error) {
 
 ### P9. Kerberos `Check` takes a global mutex on every request — and a 30 s `kinit` subprocess can run while holding it (`internal/proxy/proxy.go:309` → `internal/kerberos/kerberos.go:128-157`)
 
-**Status: ❌ open.** Consider implementing it as part of A2 (background
-maintenance ticker), which removes the per-request call site entirely.
+**Status: ✅ implemented via A2** — the maintenance ticker is the only caller
+of `reloadKerberos`, so requests never touch the Kerberos mutex.
 
 **Why?** `ServeHTTP` calls `s.reloadKerberos(false)` → `m.Check(false)` which acquires
 `m.mu` unconditionally. Under load that's a contended global lock on every request just
@@ -527,7 +529,7 @@ that is about to be renewed (the `RenewalMargin` of 10 minutes makes that safe).
 
 ### P10. Minor hot-path allocations
 
-**Status: partially done** — per-item markers below.
+**Status: ✅ implemented** — per-item markers below.
 
 Small individually, but they all sit on the per-request path:
 
@@ -548,23 +550,22 @@ Small individually, but they all sit on the per-request path:
   resolved: entries are lowercased once at parse time and matched via the
   `NoProxyHosts` map (`internal/wproxy/wproxy.go:174`, `wproxy.go:400`).
 
-- ❌ **`FindProxyForURL` copies the server slice per request**
-  (`internal/wproxy/wproxy.go:388`): `append([]Server(nil), w.Servers...)`. Callers
-  never mutate it — return `w.Servers` directly (document it as read-only).
+- ✅ **`FindProxyForURL` copies the server slice per request** — returns
+  `w.Servers` directly, documented as read-only.
 
-- ❌ **klist parsing regexes recompiled per call**
-  (`internal/kerberos/kerberos.go:277`, `kerberos.go:291`) — hoist
-  `regexp.MustCompile` to package vars. Cold path, but free to fix.
+- ✅ **klist parsing regexes recompiled per call** — hoisted to package vars
+  (`mitExpiryRe`, `heimdalExpiryRe`).
 
-- ❌ **`ntlmChallenge` copies the challenge on every lookup**
-  (`internal/proxy/proxy.go:644-649`) — the copy is only needed by one of three
-  callers; return the slice and copy at the single mutation site.
+- ✅ **`ntlmChallenge` copies the challenge on every lookup** — returns the
+  stored slice (read-only contract), folded into the P14 rework.
 
 ---
 
 ### P11. Proxy reload builds the new wproxy while holding the write lock — a slow PAC fetch stalls every request (`internal/proxy/proxy.go:377-407`)
 
-**Status: ❌ open.** *(New finding — not in the original audit.)*
+**Status: ✅ implemented** — rebuild happens outside `wmu`, the swap compares
+mode + servers via `equalServers`, and transports are cleared only on change.
+The `reloading` flag was unnecessary: with A2 the ticker is the sole caller.
 
 **Why?** `reloadProxyIfDue` takes `s.wmu.Lock()` and then calls
 `buildWproxy(s.cfg)` **inside** the critical section. For PAC-URL and Windows
@@ -633,7 +634,7 @@ previous wproxy kept.
 
 ### P12. Transport cache eviction clears the entire cache (`internal/proxy/proxy.go:1195-1200`)
 
-**Status: ❌ open (low severity).** *(Introduced by the P1 fix.)*
+**Status: ✅ implemented** — single-victim eviction at the cap.
 
 **Why?** `httpTransportForProxy` counts entries and, past `maxCachedTransports`
 (64), calls `clearTransports()` — dropping every hot connection pool because one
@@ -660,7 +661,8 @@ stampede.)
 
 ### P13. No benchmark harness — "faster than px" is currently unverifiable
 
-**Status: ❌ open.** *(New — required to validate the project's performance goal.)*
+**Status: ✅ implemented** — `make bench`, `scripts/bench-e2e.sh`,
+`docs/benchmarking.md` with the recorded micro baseline.
 
 **Why?** The stated goal is to outperform genotrance/px, but the repo has no
 `make bench` target, no end-to-end load-test script, and no recorded baseline.
@@ -709,7 +711,7 @@ p50, p99, MB/s, peak RSS.
 
 ### P14. Client-auth state behind one global mutex (`internal/proxy/proxy.go:67`, maps at `proxy.go:644-668`)
 
-**Status: ❌ open (minor — only matters with `--client-auth` under high concurrency).**
+**Status: ✅ implemented** — per-connection `clientState` in a `sync.Map`.
 
 **Why?** `clientAuth`, `ntlm`, and `ntlmSPNEGO` are three maps keyed by
 `RemoteAddr` behind a single `clientMu sync.Mutex`. With client auth enabled,
@@ -743,7 +745,7 @@ type Server struct {
 
 ### B1. CONNECT drops client bytes buffered in the hijacked `bufio.Reader` (`internal/proxy/proxy.go:1323-1334`)
 
-**Status: ✅ implemented (uncommitted)** — buffered bytes are drained into the
+**Status: ✅ implemented** — buffered bytes are drained into the
 upstream before the relay starts.
 
 **Why?** After `hijacker.Hijack()`, any bytes the client sent right behind the CONNECT
@@ -777,7 +779,7 @@ if n := brw.Reader.Buffered(); n > 0 {
 
 ### B2. Upstream CONNECT response reader can over-read and lose tunnel bytes (`internal/proxy/proxy.go:1586`)
 
-**Status: ✅ implemented (uncommitted)** — leftover buffered bytes are returned
+**Status: ✅ implemented** — leftover buffered bytes are returned
 from the CONNECT attempt and written to the client before the relay.
 
 **Why?** `sendUpstreamConnectAttempt` wraps the upstream conn in `bufio.NewReader`
@@ -811,7 +813,7 @@ relay(client, upstream, idle)
 
 ### B3. `relay` has no TCP half-close — first EOF kills both directions (`internal/proxy/proxy.go:1891-1897`)
 
-**Status: ✅ implemented (uncommitted)** — `CloseWrite` half-close per direction,
+**Status: ✅ implemented** — `CloseWrite` half-close per direction,
 landed together with the P6 relay rewrite.
 
 **Why?** When one copy direction finishes, `cp` calls `closeConns()`, closing **both**
@@ -844,7 +846,7 @@ cp := func(dst, src net.Conn) {
 
 ### B4. NTLM/Negotiate upstream auth isn't pinned to one connection in the HTTP path (`internal/proxy/proxy.go:1147-1183`)
 
-**Status: ✅ implemented (uncommitted)** — connection-oriented auth exchanges run
+**Status: ✅ implemented** — connection-oriented auth exchanges run
 on a pinned single-connection transport (`MaxConnsPerHost = 1`).
 
 **Why?** NTLM and Negotiate are *connection-oriented*: the challenge/response must
@@ -870,7 +872,7 @@ if isConnectionAuth(authSchemeFromChallenge(challenge)) {
 
 ### B5. IPv6 silently broken in `IPSet` (`internal/wproxy/wproxy.go:46-59`, `wproxy.go:71-87`)
 
-**Status: ❌ open.**
+**Status: ✅ implemented** — 16-byte addresses kept; ranges stay v4-only.
 
 **Why?** `AddCIDR` does `ipnet.IP = ip.To4()`, which is `nil` for IPv6, corrupting the
 stored net; `Contains` starts with `ip = ip.To4(); if ip == nil { return false }`. Net
@@ -918,7 +920,7 @@ func (s IPSet) Contains(ip net.IP) bool {
 
 ### B6. CONNECT to a bracketed IPv6 literal without a port builds a bad dial address (`internal/proxy/proxy.go:1440`)
 
-**Status: ❌ open.**
+**Status: ✅ implemented** — `connectTarget` uses `net.SplitHostPort`.
 
 **Why?** `if !strings.Contains(target, ":") { target += ":443" }` — an IPv6 literal
 like `[::1]` *contains* colons, so the default port is never appended and the dial
@@ -935,7 +937,7 @@ if _, _, err := net.SplitHostPort(target); err != nil {
 
 ### B7. `<local>` bypass registers `127.0.0.0/24` instead of `127.0.0.0/8` (`internal/wproxy/wproxy.go:181`)
 
-**Status: ❌ open.**
+**Status: ✅ implemented.**
 
 **Why?** The whole `127/8` block is loopback. Tools that bind `127.x.y.z` addresses
 other than `127.0.0.x` (common for local dev, DNS stubs, containers) get routed to the
@@ -953,7 +955,8 @@ if bypass == "<local>" {
 
 ### B8. Upstream Digest auth: constant cnonce and nonce-count (`internal/proxy/proxy.go:1822-1823`)
 
-**Status: ❌ open.**
+**Status: ✅ implemented** — `nextDigestNC` + random cnonce; the nc map is
+pruned lazily past the 120 s nonce lifetime.
 
 **Why?** `nc := "00000001"; cnonce := "pxgocnonce"` — RFC 7616 requires the nonce count
 to increment per request under the same server nonce, and the cnonce to be
@@ -986,7 +989,9 @@ cnonce := newCnonce()      // was: "pxgocnonce"
 
 ### B9. Client Digest auth nonce is replayable for 120 seconds (`internal/proxy/proxy.go:552`, `proxy.go:991`)
 
-**Status: ❌ open.**
+**Status: ✅ implemented** — verified nonce/nc pairs are tracked and replays
+rejected; issued nonces now carry a random salt so concurrent clients behind
+one address cannot collide.
 
 **Why?** `verifyDigestNonce` only checks that the nonce is fresh (≤120 s) and bound to
 the client IP. Nothing tracks nonce+nc reuse, so a captured `Proxy-Authorization`
@@ -1009,7 +1014,7 @@ func digestNonceReplayed(nonce, nc string) bool {
 
 ### B10. `debug.instance` is written and read without synchronization — data race (`internal/debug/debug.go:22`, `debug.go:48-57`, `debug.go:133-137`)
 
-**Status: ✅ implemented (uncommitted)** — `atomic.Pointer[Debug]`, folded into
+**Status: ✅ implemented** — `atomic.Pointer[Debug]`, folded into
 the P7 debug rework, with a concurrent init/print regression test.
 
 **Why?** `debug.New` assigns the package-level `instance` while every request goroutine
@@ -1035,7 +1040,8 @@ func Dprint(msg string) {
 
 ### B11. No SIGINT/SIGTERM handling — Ctrl-C hard-kills the proxy (`main.go`)
 
-**Status: ❌ open.** *(New finding — not in the original audit.)*
+**Status: ✅ implemented** — `signal.NotifyContext` + 5 s bounded `Shutdown`,
+and the debug log is closed on exit.
 
 **Why?** `main.go` never installs a signal handler; the only graceful stop is the
 `/PxgoQuit` endpoint. On Ctrl-C or `systemctl stop`, the process dies mid-flight:
@@ -1086,7 +1092,10 @@ Go (goroutines already provide the concurrency model px moved to).
 
 ### F1. Optional: px drop-in migration aids
 
-**Status: ❌ open (nice-to-have, low priority).**
+**Status: ❌ skipped for now (nice-to-have; revisit if px-migration demand
+shows up).** Note: underscore CLI spellings already work — the parser
+normalizes `-`/`_` (`config.go`), so only the `PX_*` env fallback and
+`px.ini` fallback remain.
 
 **Why?** pxgo deliberately renames the namespace (`--pac-encoding`, `PXGO_*`,
 `pxgo.ini`) vs px (`--pac_encoding`, `PX_*`, `px.ini`). A user migrating an
@@ -1114,7 +1123,9 @@ Document the fallback order explicitly in `docs/configuration.md` if adopted.
 
 ### A1. Split `internal/proxy/proxy.go` (2,135 lines, ~10 concerns) into cohesive files
 
-**Status: ❌ open.**
+**Status: ✅ implemented** — split into `transport.go`, `auth_client.go`,
+`auth_upstream.go`, `connect.go`, `relay.go`, `body.go` as a single
+no-logic commit.
 
 **Why?** One file currently holds client auth (Basic/Digest/NTLM/SPNEGO + DER
 parsing), upstream auth (407 retry loop, Digest/NTLM headers, SSPI glue), the
@@ -1139,8 +1150,9 @@ run `make test` before/after to prove behavior is untouched.
 
 ### A2. Move per-request maintenance (`reloadProxyIfDue`, `reloadKerberos`) to a background ticker
 
-**Status: ❌ open.** Subsumes the remaining locking concerns of **P9** and
-complements **P11**.
+**Status: ✅ implemented** — `maintenanceLoop` ticker stopped via the existing
+`closed` channel; reload failures are logged and the previous config kept.
+Subsumes the remaining locking concerns of **P9** and complements **P11**.
 
 **Why?** `ServeHTTP` (`proxy.go:304-309`) runs proxy-reload and Kerberos checks
 inline on every request: two branch+lock round trips on the hot path, and the
@@ -1192,42 +1204,28 @@ the error is logged. Tests that rely on request-triggered reload
 
 Kept as a checklist — each item is small; don't let these become essays.
 
-- [ ] **D1. README**: mention Windows SSPI single-sign-on (no `--username`
+- [x] **D1. README**: mention Windows SSPI single-sign-on (no `--username`
   needed on domain-joined machines), keyring env vars (`PXGO_KEYRING_PLAINTEXT`,
   `PXGO_KEYRING_FILE`), and the `GET /PxgoQuit` endpoint used by `--quit`.
-- [ ] **D2. `docs/architecture.md` refresh** (currently ~50 lines, predates the
-  perf rework): transport cache keyed by proxy candidate, PAC compiled-program +
-  VM pool, `internal/dnscache` (60 s / 5 s TTLs, 4096-entry cap, shared by
-  noproxy matching and PAC `dnsResolve`), splice-friendly relay with half-close,
-  and a lock map (`wmu`, `stateMu`, `clientMu` — what each guards, lock order).
-- [ ] **D3. `docs/benchmarking.md` + `make bench`** — methodology and baseline
+- [x] **D2. `docs/architecture.md` refresh**: transport cache keyed by proxy
+  candidate, PAC compiled-program + VM pool, `internal/dnscache`,
+  splice-friendly relay with half-close, maintenance ticker, and the lock map.
+- [x] **D3. `docs/benchmarking.md` + `make bench`** — methodology and baseline
   table from P13; update the numbers after each perf change.
-- [ ] **D4. Document `workers`/`threads`/`foreground` as accepted-but-inert**
-  parity settings in `docs/configuration.md` and the `pxgo.ini` comments
-  (currently only explained in `PARITY.md`).
-- [ ] **D5. CHANGELOG entry** for the uncommitted perf/bugfix batch when it
-  lands (transport reuse, PAC pool, dnscache, relay rewrite, CONNECT fixes,
-  debug rework) — several are user-visible behavior improvements.
+- [x] **D4. Document `workers`/`threads`/`foreground` as accepted-but-inert**
+  parity settings — already covered in `docs/configuration.md` and the
+  `pxgo.ini` comments.
+- [x] **D5. CHANGELOG entry** — `[Unreleased]` section covering the whole
+  perf/bugfix batch, including the reload-failure behavior change.
 
 ---
 
 ## Suggested order of attack
 
-Done (uncommitted): P1–P8, B1–B4, B10, and the ✅ parts of P10. Remaining, in
-order of expected value:
+**All items are done** except **F1** (px drop-in migration aids), which is
+deliberately deferred until px-migration demand shows up.
 
-1. **P11** (reload out of the write lock + conditional transport clear) — the
-   last remaining whole-proxy stall; pairs naturally with **A2**.
-2. **B11** (graceful shutdown) — small, user-visible, protects the debug log.
-3. **P13 + D3** (benchmark harness + baseline vs px) — land before further perf
-   work so every change gets before/after numbers.
-4. **B5–B9** — correctness batch (IPv6 IPSet, CONNECT v6 literal, `<local>`
-   /8, Digest nc/cnonce, Digest replay).
-5. **P9** (via A2), **P10 leftovers**, **P12**, **P14** — remaining hot-path and
-   contention cleanups.
-6. **A1** (proxy.go split) — any time, as a standalone no-logic commit.
-7. **D1, D2, D4, D5** docs pass; **F1** only if px-migration demand shows up.
-
-After each step: `make test` (race detector is already enabled) and an end-to-end
-smoke test, e.g. `pxgo --test=all:httpbin.org`. For before/after numbers use the
-P13 harness (`make bench` + `scripts/bench-e2e.sh`).
+After any further change: `make test` (race detector is already enabled) and an
+end-to-end smoke test, e.g. `pxgo --test=all:httpbin.org`. For before/after
+numbers use the P13 harness (`make bench` + `scripts/bench-e2e.sh`), and
+update the baseline in `docs/benchmarking.md`.
