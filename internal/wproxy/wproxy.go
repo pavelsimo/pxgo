@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pavelsimo/pxgo/internal/dnscache"
 	"github.com/pavelsimo/pxgo/internal/pac"
 	"github.com/pavelsimo/pxgo/internal/systemproxy"
 )
@@ -406,11 +407,7 @@ func (w *Wproxy) isNoProxy(netloc Server) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return w.NoProxy.Contains(ip)
 	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return false
-	}
-	for _, ip := range ips {
+	for _, ip := range dnscache.Lookup(host) {
 		if w.NoProxy.Contains(ip) {
 			return true
 		}

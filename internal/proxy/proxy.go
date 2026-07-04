@@ -72,6 +72,20 @@ type Server struct {
 	closed     chan struct{}
 	once       sync.Once
 	active     int64
+	transports sync.Map // proxy key -> *http.Transport, reused across requests
+
+	// Derived from immutable config once in New so request handlers do not
+	// re-parse it on every call.
+	clientAuthList []string
+	allowSet       wproxy.IPSet
+	hostIPs        atomic.Pointer[hostIPEntry]
+}
+
+// hostIPEntry caches the local interface addresses used by --hostonly checks;
+// enumerating interfaces is a syscall storm we do not want per request.
+type hostIPEntry struct {
+	ips     []net.IP
+	expires time.Time
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -95,7 +109,13 @@ func New(cfg config.Config) (*Server, error) {
 	if krb != nil {
 		krb.Check(true)
 	}
-	return &Server{cfg: cfg, w: wp, lastReload: time.Now(), port: cfg.Port, clientAuth: map[string]bool{}, ntlm: map[string][]byte{}, ntlmSPNEGO: map[string]bool{}, krb: krb, closed: make(chan struct{})}, nil
+	s := &Server{cfg: cfg, w: wp, lastReload: time.Now(), port: cfg.Port, clientAuth: map[string]bool{}, ntlm: map[string][]byte{}, ntlmSPNEGO: map[string]bool{}, krb: krb, closed: make(chan struct{})}
+	s.clientAuthList = clientAuthMethods(cfg.ClientAuth)
+	if cfg.Allow != "" {
+		// Already validated by validateAllow above.
+		s.allowSet, _, _ = wproxy.ParseNoProxy(cfg.Allow, true)
+	}
+	return s, nil
 }
 
 func validateAllow(allow string) error {
@@ -254,6 +274,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if srv != nil {
 			err = srv.Shutdown(ctx)
 		}
+		s.clearTransports()
 		if s.krb != nil {
 			s.krb.Cleanup()
 		}
@@ -324,8 +345,7 @@ func (s *Server) isClientAllowed(remoteAddr string) bool {
 		return false
 	}
 	if s.cfg.Allow != "" && s.cfg.Allow != "*.*.*.*" && s.cfg.Allow != "0.0.0.0/0" {
-		allow, _, _ := wproxy.ParseNoProxy(s.cfg.Allow, true)
-		if allow.Contains(ip) {
+		if s.allowSet.Contains(ip) {
 			return true
 		}
 		if !s.cfg.Hostonly || s.cfg.Gateway {
@@ -333,7 +353,7 @@ func (s *Server) isClientAllowed(remoteAddr string) bool {
 		}
 	}
 	if s.cfg.Hostonly {
-		for _, hostIP := range config.GetHostIPs() {
+		for _, hostIP := range s.cachedHostIPs() {
 			if hostIP.Equal(ip) {
 				return true
 			}
@@ -341,6 +361,17 @@ func (s *Server) isClientAllowed(remoteAddr string) bool {
 		return false
 	}
 	return true
+}
+
+// cachedHostIPs refreshes lazily rather than via a background goroutine so
+// Servers created without Shutdown (common in tests) do not leak a ticker.
+func (s *Server) cachedHostIPs() []net.IP {
+	if e := s.hostIPs.Load(); e != nil && time.Now().Before(e.expires) {
+		return e.ips
+	}
+	ips := config.GetHostIPs()
+	s.hostIPs.Store(&hostIPEntry{ips: ips, expires: time.Now().Add(30 * time.Second)})
+	return ips
 }
 
 func (s *Server) reloadProxyIfDue() error {
@@ -371,6 +402,7 @@ func (s *Server) reloadProxyIfDue() error {
 	}
 	s.w = wp
 	s.lastReload = time.Now()
+	s.clearTransports()
 	return nil
 }
 
@@ -451,7 +483,7 @@ func (s *Server) clearClientState(remoteAddr string) {
 }
 
 func (s *Server) checkClientAuth(req *http.Request) bool {
-	for _, auth := range clientAuthMethods(s.cfg.ClientAuth) {
+	for _, auth := range s.clientAuthList {
 		switch auth {
 		case authBasic:
 			if s.checkBasicClientAuth(req) {
@@ -576,7 +608,7 @@ func (s *Server) checkNTLMClientAuth(req *http.Request, expectedScheme string) b
 
 func (s *Server) clientAuthChallenges(req *http.Request) []string {
 	var challenges []string
-	for _, auth := range clientAuthMethods(s.cfg.ClientAuth) {
+	for _, auth := range s.clientAuthList {
 		switch auth {
 		case authNegotiate:
 			if challenge := s.ntlmChallenge(req.RemoteAddr); len(challenge) != 0 {
@@ -909,7 +941,7 @@ func validateClientAuth(auth string) error {
 }
 
 func (s *Server) clientAuthEnabled() bool {
-	return len(clientAuthMethods(s.cfg.ClientAuth)) != 0
+	return len(s.clientAuthList) != 0
 }
 
 func clientAuthMethods(auth string) []string {
@@ -1042,18 +1074,23 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
-	debug.Dprint(fmt.Sprintf("HTTP proxies: %v", proxies))
+	debug.Dprintf("HTTP proxies: %v", proxies)
 	u, err := url.Parse(targetURL)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	body, err := newReplayableBody(req.Body)
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
+	// Buffer the body only when it may be re-sent (proxy fallback or a 407
+	// auth retry); otherwise stream it straight through.
+	var body *replayableBody
+	if s.needsReplayableBody(req, proxies) {
+		body, err = newReplayableBody(req.Body)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer body.Close()
 	}
-	defer body.Close()
 	incomingProxyAuth := req.Header.Get("Proxy-Authorization")
 	resp, err := s.roundTripHTTPWithProxyFallback(req, u, body, targetURL, incomingProxyAuth, proxies)
 	if err != nil {
@@ -1062,10 +1099,38 @@ func (s *Server) handleHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	debug.Dprint(fmt.Sprintf("HTTP response: %d %s", resp.StatusCode, targetURL))
+	debug.Dprintf("HTTP response: %d %s", resp.StatusCode, targetURL)
 	copyHeader(rw.Header(), resp.Header)
 	rw.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(rw, resp.Body)
+}
+
+// needsReplayableBody reports whether the request body must be buffered so it
+// can be re-sent. That is the case when more than one attempt may consume it:
+// either proxy fallback across candidates (http.Transport closes the body even
+// on a failed attempt, so a streamed body cannot be replayed), or an upstream
+// 407 auth retry that can actually produce credentials.
+func (s *Server) needsReplayableBody(req *http.Request, proxies []wproxy.Server) bool {
+	if req.Body == nil || req.Body == http.NoBody {
+		return false
+	}
+	candidates := proxyCandidates(proxies)
+	if len(candidates) > 1 {
+		return true
+	}
+	if candidates[0] == wproxy.Direct {
+		return false
+	}
+	if req.Header.Get("Proxy-Authorization") != "" {
+		return true // passthrough auth is retried on 407
+	}
+	if len(upstreamAuthModes(s.cfg.Auth)) == 0 {
+		return false // auth=NONE: never retried
+	}
+	if s.cfg.Username != "" && s.cfg.Password != "" {
+		return true
+	}
+	return runtime.GOOS == goosWindows // SSPI may authenticate without configured credentials
 }
 
 func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, body *replayableBody, targetURL, incomingProxyAuth string, proxies []wproxy.Server) (*http.Response, error) {
@@ -1075,7 +1140,7 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 		if candidate == wproxy.Direct {
 			debug.Dprint("HTTP: trying direct connection to " + targetURL)
 		} else {
-			debug.Dprint(fmt.Sprintf("HTTP: trying proxy %s:%d for %s", candidate.Host, candidate.Port, targetURL))
+			debug.Dprintf("HTTP: trying proxy %s:%d for %s", candidate.Host, candidate.Port, targetURL)
 		}
 		transport := s.httpTransportForProxy(candidate)
 		usesUpstreamProxy := candidate != wproxy.Direct
@@ -1113,7 +1178,32 @@ func (s *Server) roundTripHTTPWithProxyFallback(req *http.Request, u *url.URL, b
 	return nil, lastErr
 }
 
+// maxCachedTransports bounds the transport cache; a PAC file can emit an
+// unbounded set of distinct proxies over time.
+const maxCachedTransports = 64
+
 func (s *Server) httpTransportForProxy(p wproxy.Server) *http.Transport {
+	key := "direct"
+	if p != wproxy.Direct {
+		key = proxyScheme(p) + "://" + net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+	}
+	if t, ok := s.transports.Load(key); ok {
+		return t.(*http.Transport)
+	}
+	transport := s.newHTTPTransport(p)
+	count := 0
+	s.transports.Range(func(any, any) bool {
+		count++
+		return count < maxCachedTransports
+	})
+	if count >= maxCachedTransports {
+		s.clearTransports()
+	}
+	actual, _ := s.transports.LoadOrStore(key, transport)
+	return actual.(*http.Transport)
+}
+
+func (s *Server) newHTTPTransport(p wproxy.Server) *http.Transport {
 	timeout := time.Duration(s.cfg.SockTimeout * float64(time.Second))
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -1121,12 +1211,15 @@ func (s *Server) httpTransportForProxy(p wproxy.Server) *http.Transport {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
 	}
 	if p == wproxy.Direct {
 		return transport
 	}
 	scheme := proxyScheme(p)
-	addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
+	addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
 	if strings.HasPrefix(scheme, "socks") {
 		transport.DialContext = func(ctx context.Context, network, target string) (net.Conn, error) {
 			return dialSOCKSProxy(ctx, scheme, addr, target, timeout)
@@ -1137,6 +1230,14 @@ func (s *Server) httpTransportForProxy(p wproxy.Server) *http.Transport {
 	return transport
 }
 
+func (s *Server) clearTransports() {
+	s.transports.Range(func(key, value any) bool {
+		s.transports.Delete(key)
+		value.(*http.Transport).CloseIdleConnections()
+		return true
+	})
+}
+
 func proxyCandidates(proxies []wproxy.Server) []wproxy.Server {
 	if len(proxies) == 0 {
 		return []wproxy.Server{wproxy.Direct}
@@ -1145,10 +1246,31 @@ func proxyCandidates(proxies []wproxy.Server) []wproxy.Server {
 }
 
 func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request, u *url.URL, body *replayableBody, targetURL, passthroughAuth string, resp *http.Response) (*http.Response, error) {
+	if body == nil && req.Body != nil && req.Body != http.NoBody {
+		// The body was streamed and cannot be replayed; pass the 407 through.
+		s.forceKerberosReloadForUpstreamAuth(resp)
+		return resp, nil
+	}
 	var session authSession
+	var pinned *http.Transport
+	// finish releases the pinned connection once the caller is done with the
+	// final response body; closing it earlier would break the response.
+	finish := func(r *http.Response) *http.Response {
+		if pinned != nil && r != nil && r.Body != nil {
+			r.Body = &transportClosingBody{ReadCloser: r.Body, transport: pinned}
+		}
+		return r
+	}
 	for attempts := 0; attempts < 3 && resp.StatusCode == http.StatusProxyAuthRequired; attempts++ {
-		debug.Dprint(fmt.Sprintf("HTTP proxy auth challenge (attempt %d): %s", attempts+1, targetURL))
+		debug.Dprintf("HTTP proxy auth challenge (attempt %d): %s", attempts+1, targetURL)
 		challenge := selectProxyAuthenticateChallenge(s.cfg.Auth, resp.Header.Values("Proxy-Authenticate"))
+		if pinned == nil && isConnectionAuth(authSchemeFromChallenge(challenge)) {
+			// NTLM/Negotiate handshakes must complete on one TCP connection;
+			// a shared pooled transport could spread them across several.
+			pinned = transport.Clone()
+			pinned.MaxConnsPerHost = 1
+			transport = pinned
+		}
 		var auth string
 		switch {
 		case session != nil:
@@ -1163,12 +1285,15 @@ func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request
 		}
 		if auth == "" {
 			s.forceKerberosReloadForUpstreamAuth(resp)
-			return resp, nil
+			return finish(resp), nil
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		nextReq, reqErr := s.newOutboundRequest(req, u, body, auth)
 		if reqErr != nil {
+			if pinned != nil {
+				pinned.CloseIdleConnections()
+			}
 			return nil, reqErr
 		}
 		nextResp, roundTripErr := transport.RoundTrip(nextReq)
@@ -1179,7 +1304,20 @@ func (s *Server) retryHTTPProxyAuth(transport *http.Transport, req *http.Request
 		resp = nextResp
 	}
 	s.forceKerberosReloadForUpstreamAuth(resp)
-	return resp, nil
+	return finish(resp), nil
+}
+
+// transportClosingBody releases a single-connection pinned transport after the
+// response body has been consumed and closed.
+type transportClosingBody struct {
+	io.ReadCloser
+	transport *http.Transport
+}
+
+func (b *transportClosingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.transport.CloseIdleConnections()
+	return err
 }
 
 // sspiSessionAuth picks Negotiate or Authenticate depending on whether the
@@ -1196,12 +1334,14 @@ func (s *Server) newOutboundRequest(req *http.Request, u *url.URL, body *replaya
 	outReq := req.Clone(req.Context())
 	outReq.URL = u
 	outReq.RequestURI = ""
-	var err error
-	outReq.Body, err = body.Open()
-	if err != nil {
-		return nil, err
-	}
-	outReq.ContentLength = body.Size()
+	if body != nil {
+		rc, err := body.Open()
+		if err != nil {
+			return nil, err
+		}
+		outReq.Body = rc
+		outReq.ContentLength = body.Size()
+	} // else: stream req.Body as-is (single attempt, no replay needed)
 	outReq.Header = cloneHeader(req.Header)
 	stripProxyHeaders(outReq.Header)
 	if s.cfg.UserAgent != "" {
@@ -1306,9 +1446,8 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadGateway)
 		return
 	}
-	debug.Dprint(fmt.Sprintf("CONNECT proxies: %v", proxies))
-	var upstream net.Conn
-	upstream, err = s.connectWithProxyFallback(target, req.Header.Get("Proxy-Authorization"), proxies)
+	debug.Dprintf("CONNECT proxies: %v", proxies)
+	upstream, leftover, err := s.connectWithProxyFallback(target, req.Header.Get("Proxy-Authorization"), proxies)
 	if err != nil {
 		debug.Dprint("CONNECT failed: " + err.Error())
 		http.Error(rw, err.Error(), http.StatusBadGateway)
@@ -1326,7 +1465,28 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	_, _ = brw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
-	_ = brw.Flush()
+	// Bytes the upstream proxy sent behind its CONNECT response (e.g. a
+	// server-speaks-first banner) belong to the tunnel; forward them.
+	if len(leftover) > 0 {
+		_, _ = brw.Write(leftover)
+	}
+	if err := brw.Flush(); err != nil {
+		_ = upstream.Close()
+		_ = client.Close()
+		return
+	}
+	// Bytes the client pipelined behind the CONNECT request (e.g. an eager
+	// TLS ClientHello) are buffered in brw.Reader; relay reads the raw conn,
+	// so forward them explicitly or they would be lost.
+	if n := brw.Reader.Buffered(); n > 0 {
+		pipelined, _ := brw.Reader.Peek(n)
+		if _, err := upstream.Write(pipelined); err != nil {
+			_ = upstream.Close()
+			_ = client.Close()
+			return
+		}
+		_, _ = brw.Reader.Discard(n)
+	}
 	debug.Dprint("CONNECT tunnel established: " + target)
 	atomic.AddInt64(&s.active, 1)
 	go func() {
@@ -1335,36 +1495,37 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 	}()
 }
 
-func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, proxies []wproxy.Server) (net.Conn, error) {
+func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, proxies []wproxy.Server) (net.Conn, []byte, error) {
 	timeout := time.Duration(s.cfg.SockTimeout * float64(time.Second))
 	var lastErr error
 	for _, p := range proxyCandidates(proxies) {
 		var upstream net.Conn
+		var leftover []byte
 		var err error
 		if p == wproxy.Direct {
 			debug.Dprint("CONNECT: dialing direct to " + target)
 			upstream, err = net.DialTimeout("tcp", target, timeout) // #nosec G704 -- this proxy must dial client-requested CONNECT targets.
 		} else {
 			addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
-			debug.Dprint(fmt.Sprintf("CONNECT: dialing via %s proxy %s for %s", proxyScheme(p), addr, target))
+			debug.Dprintf("CONNECT: dialing via %s proxy %s for %s", proxyScheme(p), addr, target)
 			switch scheme := proxyScheme(p); {
 			case scheme == httpsScheme:
 				upstream, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, &tls.Config{ServerName: p.Host})
 				if err == nil {
-					err = s.sendUpstreamConnect(upstream, target, incomingProxyAuth)
+					leftover, err = s.sendUpstreamConnect(upstream, target, incomingProxyAuth)
 				}
 			case strings.HasPrefix(scheme, "socks"):
 				upstream, err = dialSOCKSProxy(context.Background(), scheme, addr, target, timeout)
 			default:
 				upstream, err = net.DialTimeout("tcp", addr, timeout)
 				if err == nil {
-					err = s.sendUpstreamConnect(upstream, target, incomingProxyAuth)
+					leftover, err = s.sendUpstreamConnect(upstream, target, incomingProxyAuth)
 				}
 			}
 		}
 		if err == nil {
 			debug.Dprint("CONNECT: upstream connected to " + target)
-			return upstream, nil
+			return upstream, leftover, nil
 		}
 		debug.Dprint("CONNECT: attempt failed: " + err.Error())
 		if upstream != nil {
@@ -1376,7 +1537,7 @@ func (s *Server) connectWithProxyFallback(target, incomingProxyAuth string, prox
 		lastErr = errors.New("no proxy candidates")
 	}
 	debug.Dprint("CONNECT: all candidates failed for " + target + ": " + lastErr.Error())
-	return nil, lastErr
+	return nil, nil, lastErr
 }
 
 func (s *Server) forceKerberosReloadForUpstreamAuth(resp *http.Response) {
@@ -1559,15 +1720,30 @@ func socksHostLen(host string) (byte, error) {
 	return byte(len(host)), nil
 }
 
-func (s *Server) sendUpstreamConnect(conn net.Conn, target string, passthroughAuth string) error {
+func (s *Server) sendUpstreamConnect(conn net.Conn, target string, passthroughAuth string) ([]byte, error) {
 	return sendUpstreamConnectWithAuth(conn, target, s.cfg, "", passthroughAuth, s.forceKerberosReloadForUpstreamAuth)
 }
 
-func sendUpstreamConnectWithAuth(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, onAuthFailure func(*http.Response)) error {
-	return sendUpstreamConnectAttempt(conn, target, cfg, challenge, passthroughAuth, 0, nil, onAuthFailure)
+// sendUpstreamConnectWithAuth performs the CONNECT handshake with the upstream
+// proxy and returns any tunnel bytes the upstream sent behind its response
+// headers (they end up in the response reader's buffer and must be forwarded
+// to the client, or server-speaks-first protocols would hang).
+func sendUpstreamConnectWithAuth(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, onAuthFailure func(*http.Response)) ([]byte, error) {
+	// One reader for all auth retry attempts: bytes buffered behind an
+	// intermediate 407 must not be stranded in a discarded reader.
+	reader := bufio.NewReader(conn)
+	if err := sendUpstreamConnectAttempt(conn, reader, target, cfg, challenge, passthroughAuth, 0, nil, onAuthFailure); err != nil {
+		return nil, err
+	}
+	if n := reader.Buffered(); n > 0 {
+		leftover := make([]byte, n)
+		_, _ = io.ReadFull(reader, leftover)
+		return leftover, nil
+	}
+	return nil, nil
 }
 
-func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config, challenge, passthroughAuth string, attempts int, session authSession, onAuthFailure func(*http.Response)) error {
+func sendUpstreamConnectAttempt(conn net.Conn, reader *bufio.Reader, target string, cfg config.Config, challenge, passthroughAuth string, attempts int, session authSession, onAuthFailure func(*http.Response)) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
 	var auth string
@@ -1583,7 +1759,6 @@ func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config,
 	if _, err := conn.Write([]byte(b.String())); err != nil {
 		return err
 	}
-	reader := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
 	if err != nil {
 		return err
@@ -1602,10 +1777,10 @@ func sendUpstreamConnectAttempt(conn net.Conn, target string, cfg config.Config,
 			}
 		}
 		if nextSession != nil {
-			return sendUpstreamConnectAttempt(conn, target, cfg, nextChallenge, passthroughAuth, attempts+1, nextSession, onAuthFailure)
+			return sendUpstreamConnectAttempt(conn, reader, target, cfg, nextChallenge, passthroughAuth, attempts+1, nextSession, onAuthFailure)
 		}
 		if auth := upstreamProxyAuthHeader(cfg, http.MethodConnect, target, nextChallenge, passthroughAuth); auth != "" {
-			return sendUpstreamConnectAttempt(conn, target, cfg, nextChallenge, passthroughAuth, attempts+1, nil, onAuthFailure)
+			return sendUpstreamConnectAttempt(conn, reader, target, cfg, nextChallenge, passthroughAuth, attempts+1, nil, onAuthFailure)
 		}
 	}
 	if resp.StatusCode/100 != 2 {
@@ -1863,83 +2038,86 @@ func canonicalConnectionAuthScheme(scheme string) string {
 	return authSchemeNeg
 }
 
+// relay pumps bytes between the two ends of a CONNECT tunnel. Both conns stay
+// raw (no reader wrappers) so io.Copy can use zero-copy paths (splice on
+// Linux); idle detection is done with read deadlines instead. On a clean EOF
+// only the destination's write side is closed, so the opposite direction can
+// keep draining in-flight data (TCP half-close).
 func relay(a, b net.Conn, idle time.Duration) {
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
 	var wg sync.WaitGroup
-	closeOnce := sync.Once{}
-	closeConns := func() {
-		closeOnce.Do(func() {
-			_ = a.Close()
-			_ = b.Close()
-		})
-	}
-	done := make(chan struct{})
-	var activity chan struct{}
-	if idle > 0 {
-		activity = make(chan struct{}, 1)
-		go closeTunnelWhenIdle(idle, activity, done, closeConns)
-	}
-	touch := func() {
-		if activity == nil {
-			return
-		}
-		select {
-		case activity <- struct{}{}:
-		default:
-		}
-	}
 	wg.Add(2)
 	cp := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = copyWithActivity(dst, src, touch)
-		closeConns()
+		if copyDirection(dst, src, idle, &lastActivity) {
+			halfClose(dst)
+			return
+		}
+		// Real error or idle expiry: tear the whole tunnel down.
+		_ = a.Close()
+		_ = b.Close()
 	}
 	go cp(a, b)
 	go cp(b, a)
 	wg.Wait()
-	close(done)
-	closeConns()
+	_ = a.Close()
+	_ = b.Close()
 }
 
-func closeTunnelWhenIdle(idle time.Duration, activity <-chan struct{}, done <-chan struct{}, closeConns func()) {
-	timer := time.NewTimer(idle)
-	defer timer.Stop()
+// copyDirection copies src to dst until EOF, a real error, or tunnel-wide idle
+// expiry. It reports whether the copy ended in a clean EOF. When idle > 0 each
+// io.Copy call is bounded by a read deadline; on timeout the direction only
+// gives up once the tunnel as a whole has been silent for the idle interval.
+func copyDirection(dst, src net.Conn, idle time.Duration, lastActivity *atomic.Int64) bool {
+	if idle <= 0 {
+		_, err := io.Copy(dst, src)
+		return err == nil
+	}
+	// Both directions' deadlines fire at the same instant, so a quiet
+	// direction can observe staleness a moment before the active one records
+	// its progress. A single short re-check closes that window.
+	grace := idle / 10
+	if grace > 100*time.Millisecond {
+		grace = 100 * time.Millisecond
+	}
+	graced := false
+	wait := idle
 	for {
-		select {
-		case <-activity:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(idle)
-		case <-timer.C:
-			closeConns()
-			return
-		case <-done:
-			return
+		_ = src.SetReadDeadline(time.Now().Add(wait))
+		n, err := io.Copy(dst, src)
+		if n > 0 {
+			lastActivity.Store(time.Now().UnixNano())
 		}
+		if err == nil {
+			return true // EOF
+		}
+		var ne net.Error
+		if !errors.As(err, &ne) || !ne.Timeout() {
+			return false
+		}
+		if time.Since(time.Unix(0, lastActivity.Load())) < idle {
+			graced = false
+			wait = idle
+			continue
+		}
+		if !graced {
+			graced = true
+			wait = grace
+			continue
+		}
+		return false // tunnel idle
 	}
 }
 
-func copyWithActivity(dst io.Writer, src io.Reader, touch func()) (int64, error) {
-	if touch == nil {
-		return io.Copy(dst, src)
-	}
-	return io.Copy(dst, activityReader{Reader: src, touch: touch})
-}
+type closeWriter interface{ CloseWrite() error }
 
-type activityReader struct {
-	io.Reader
-	touch func()
-}
-
-func (r activityReader) Read(p []byte) (int, error) {
-	n, err := r.Reader.Read(p)
-	if n > 0 {
-		r.touch()
+func halfClose(c net.Conn) {
+	if cw, ok := c.(closeWriter); ok { // *net.TCPConn and *tls.Conn
+		_ = cw.CloseWrite()
+		return
 	}
-	return n, err
+	_ = c.Close()
 }
 
 func cloneHeader(h http.Header) http.Header {

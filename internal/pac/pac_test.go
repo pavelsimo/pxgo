@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const simplePAC = `
@@ -208,5 +211,140 @@ function FindProxyForURL(url, host) {
 	got := p.FindProxyForURL("http://example.com/path", "example.com")
 	if got != "range.proxy:8080" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPacConcurrentEvaluation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.pac")
+	pacContent := `
+function FindProxyForURL(url, host) {
+  if (dnsDomainIs(host, ".proxied.example.com") && shExpMatch(url, "http://*")) return "PROXY proxy1.com:8080";
+  return "DIRECT";
+}`
+	if err := os.WriteFile(path, []byte(pacContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := New(path, "utf-8")
+	var wg sync.WaitGroup
+	errs := make(chan string, 64)
+	for g := 0; g < 32; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if g%2 == 0 {
+					if got := p.FindProxyForURL("http://a.proxied.example.com/x", "a.proxied.example.com"); got != "proxy1.com:8080" {
+						errs <- got
+						return
+					}
+				} else {
+					if got := p.FindProxyForURL("http://other.example.org/x", "other.example.org"); got != "DIRECT" {
+						errs <- got
+						return
+					}
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	if got, ok := <-errs; ok {
+		t.Fatalf("concurrent evaluation returned %q", got)
+	}
+}
+
+func TestPacConcurrentEvaluationDuringReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reload-race.pac")
+	first := `function FindProxyForURL(url, host) { return "PROXY first.proxy:8080"; }`
+	second := `function FindProxyForURL(url, host) { return "PROXY second.proxy:8080"; }`
+	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := New(path, "utf-8")
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	bad := make(chan string, 16)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got := p.FindProxyForURL("http://example.com", "example.com")
+				if got != "first.proxy:8080" && got != "second.proxy:8080" && got != "DIRECT" {
+					select {
+					case bad <- got:
+					default:
+					}
+				}
+			}
+		}()
+	}
+	if err := os.WriteFile(path, []byte(second), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		p.Close()
+		time.Sleep(time.Millisecond)
+	}
+	close(stop)
+	wg.Wait()
+	close(bad)
+	if got, ok := <-bad; ok {
+		t.Fatalf("evaluation during reload returned %q", got)
+	}
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "second.proxy:8080" {
+		t.Fatalf("post-reload got %q", got)
+	}
+}
+
+func TestPacSlowURLTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	oldTimeout := pacHTTPTimeout
+	pacHTTPTimeout = 200 * time.Millisecond
+	defer func() { pacHTTPTimeout = oldTimeout }()
+	p := New(srv.URL, "utf-8")
+	start := time.Now()
+	got := p.FindProxyForURL("http://example.com", "example.com")
+	if got != "DIRECT" {
+		t.Fatalf("got %q", got)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("hanging PAC source blocked for %s", elapsed)
+	}
+}
+
+func TestPacFailedLoadIsNotRetriedOnEveryRequest(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	p := New(srv.URL, "utf-8")
+	for i := 0; i < 5; i++ {
+		if got := p.FindProxyForURL("http://example.com", "example.com"); got != "DIRECT" {
+			t.Fatalf("got %q", got)
+		}
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("failed PAC source fetched %d times within the retry interval, want 1", got)
+	}
+	// Close resets the backoff so an explicit reload retries immediately.
+	p.Close()
+	if got := p.FindProxyForURL("http://example.com", "example.com"); got != "DIRECT" {
+		t.Fatalf("got %q", got)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("fetch count after Close=%d, want 2", got)
 	}
 }

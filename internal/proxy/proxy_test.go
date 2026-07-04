@@ -2394,7 +2394,11 @@ func TestActiveTunnelCountTracksOpenCONNECTTunnels(t *testing.T) {
 		}
 	})
 
-	px := startTestProxy(t, config.Default())
+	cfg := config.Default()
+	// The relay half-closes on client EOF and lets the upstream side drain
+	// until the idle timeout, so use a short idle to observe the teardown.
+	cfg.Idle = 1
+	px := startTestProxy(t, cfg)
 	const tunnels = 5
 	var clients []net.Conn
 	for i := 0; i < tunnels; i++ {
@@ -2437,7 +2441,7 @@ func TestActiveTunnelCountTracksOpenCONNECTTunnels(t *testing.T) {
 	for _, conn := range clients {
 		_ = conn.Close()
 	}
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && px.ActiveTunnels() != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2713,4 +2717,303 @@ func countNil(results []error) int {
 		}
 	}
 	return count
+}
+
+func TestHTTPTransportReusesUpstreamConnections(t *testing.T) {
+	var mu sync.Mutex
+	conns := map[string]bool{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		conns[r.RemoteAddr] = true
+		mu.Unlock()
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+	px := startTestProxy(t, config.Default())
+	client := proxyClient(t, px.Port())
+	for i := 0; i < 10; i++ {
+		resp, err := client.Get(upstream.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(conns) > 2 {
+		t.Fatalf("expected upstream connection reuse, got %d distinct connections for 10 requests", len(conns))
+	}
+}
+
+func TestUpstreamNTLMHandshakeStaysOnOneConnection(t *testing.T) {
+	var mu sync.Mutex
+	var requests []string // remote addr per request, in order
+	parent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Proxy-Authorization")
+		mu.Lock()
+		requests = append(requests, r.RemoteAddr)
+		n := len(requests)
+		mu.Unlock()
+		switch n {
+		case 1:
+			w.Header().Set("Proxy-Authenticate", "NTLM")
+			http.Error(w, "auth required", http.StatusProxyAuthRequired)
+		case 2:
+			if ntlmMessageType(t, auth) != 1 {
+				t.Errorf("expected NTLM type 1, got %q", auth)
+			}
+			w.Header().Set("Proxy-Authenticate", "NTLM "+minimalNTLMChallenge(t))
+			http.Error(w, "challenge", http.StatusProxyAuthRequired)
+		default:
+			if ntlmMessageType(t, auth) != 3 {
+				t.Errorf("expected NTLM type 3, got %q", auth)
+			}
+			fmt.Fprint(w, "ntlm pinned ok")
+		}
+	}))
+	defer parent.Close()
+	parentURL, _ := url.Parse(parent.URL)
+	childCfg := config.Default()
+	childCfg.Server = parentURL.Host
+	childCfg.Auth = "NTLM"
+	childCfg.Username = "DOMAIN\\test"
+	childCfg.Password = "12345"
+	child := startTestProxy(t, childCfg)
+	client := proxyClient(t, child.Port())
+	resp, err := client.Get("http://ntlm.example.test/resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(data) != "ntlm pinned ok" {
+		t.Fatalf("status=%s body=%q", resp.Status, data)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(requests))
+	}
+	// The type 1 -> type 3 exchange must complete on a single TCP connection.
+	if requests[1] != requests[2] {
+		t.Fatalf("NTLM handshake spread across connections: type1=%s type3=%s", requests[1], requests[2])
+	}
+}
+
+func TestNeedsReplayableBody(t *testing.T) {
+	upstreamServer := wproxy.Server{Host: "proxy.example.test", Port: 3128, Scheme: "http"}
+	newReq := func(withBody bool) *http.Request {
+		body := io.Reader(http.NoBody)
+		if withBody {
+			body = strings.NewReader("payload")
+		}
+		req := httptest.NewRequest(http.MethodPost, "http://origin.example.test/", body)
+		return req
+	}
+	cases := []struct {
+		name     string
+		cfg      func(*config.Config)
+		auth     string
+		withBody bool
+		proxies  []wproxy.Server
+		want     bool
+	}{
+		{name: "no body never buffers", withBody: false, proxies: []wproxy.Server{upstreamServer}, want: false},
+		{name: "direct streams", withBody: true, proxies: nil, want: false},
+		{name: "multiple candidates buffer for fallback", withBody: true, proxies: []wproxy.Server{upstreamServer, wproxy.Direct}, want: true},
+		{name: "upstream with credentials buffers", withBody: true, proxies: []wproxy.Server{upstreamServer}, cfg: func(c *config.Config) { c.Username = "u"; c.Password = "p" }, want: true},
+		{name: "upstream auth NONE streams", withBody: true, proxies: []wproxy.Server{upstreamServer}, cfg: func(c *config.Config) { c.Auth = "NONE" }, want: false},
+		{name: "upstream without credentials streams", withBody: true, proxies: []wproxy.Server{upstreamServer}, want: runtime.GOOS == goosWindows},
+		{name: "passthrough auth buffers", withBody: true, auth: "Basic dXNlcjpwYXNz", proxies: []wproxy.Server{upstreamServer}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			if tc.cfg != nil {
+				tc.cfg(&cfg)
+			}
+			s := &Server{cfg: cfg}
+			req := newReq(tc.withBody)
+			if tc.auth != "" {
+				req.Header.Set("Proxy-Authorization", tc.auth)
+			}
+			if got := s.needsReplayableBody(req, tc.proxies); got != tc.want {
+				t.Fatalf("needsReplayableBody=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDirectLargePostStreamsBody(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), maxMemoryBody+4096)
+	var received int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		atomic.StoreInt64(&received, n)
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+	px := startTestProxy(t, config.Default())
+	client := proxyClient(t, px.Port())
+	resp, err := client.Post(upstream.URL, "application/octet-stream", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	if got := atomic.LoadInt64(&received); got != int64(len(payload)) {
+		t.Fatalf("upstream received %d bytes, want %d", got, len(payload))
+	}
+}
+
+func TestConnectForwardsClientBytesPipelinedBehindRequest(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		got <- string(buf[:n])
+	}()
+	px := startTestProxy(t, config.Default())
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", px.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// CONNECT request and early tunnel bytes in a single write, so the early
+	// bytes land in the server's request reader buffer.
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\nearly-bytes", ln.Addr().String(), ln.Addr().String())
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status=%s", resp.Status)
+	}
+	select {
+	case data := <-got:
+		if data != "early-bytes" {
+			t.Fatalf("target received %q, want %q", data, "early-bytes")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("target never received the pipelined bytes")
+	}
+}
+
+func TestConnectForwardsUpstreamBannerBehindResponse(t *testing.T) {
+	// Fake upstream proxy that answers CONNECT with the 200 response and a
+	// server-speaks-first banner in a single write.
+	parentLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parentLn.Close()
+	go func() {
+		conn, err := parentLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		if _, err := http.ReadRequest(reader); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\nBANNER"))
+		// Keep the tunnel open until the client goes away.
+		_, _ = io.Copy(io.Discard, reader)
+	}()
+	cfg := config.Default()
+	cfg.Server = parentLn.Addr().String()
+	px := startTestProxy(t, cfg)
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", px.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "CONNECT banner.example.test:25 HTTP/1.1\r\nHost: banner.example.test:25\r\n\r\n")
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status=%s", resp.Status)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	banner := make([]byte, len("BANNER"))
+	if _, err := io.ReadFull(reader, banner); err != nil {
+		t.Fatalf("reading banner: %v", err)
+	}
+	if string(banner) != "BANNER" {
+		t.Fatalf("banner=%q", banner)
+	}
+}
+
+func TestConnectTunnelSupportsTCPHalfClose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Read the full request (to EOF), wait, then answer. This only works
+		// if the proxy half-closes instead of tearing down the tunnel.
+		data, _ := io.ReadAll(conn)
+		time.Sleep(200 * time.Millisecond)
+		_, _ = fmt.Fprintf(conn, "reply-to:%s", data)
+	}()
+	px := startTestProxy(t, config.Default())
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", px.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", ln.Addr().String(), ln.Addr().String())
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status=%s", resp.Status)
+	}
+	if _, err := conn.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	// Half-close our write side; we still expect to read the delayed reply.
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	reply, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("reading reply after half-close: %v", err)
+	}
+	if string(reply) != "reply-to:request" {
+		t.Fatalf("reply=%q", reply)
+	}
 }

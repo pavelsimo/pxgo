@@ -8,8 +8,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/dop251/goja"
+
+	"github.com/pavelsimo/pxgo/internal/dnscache"
 )
 
 const (
@@ -17,12 +21,35 @@ const (
 	localhostIP = "127.0.0.1"
 )
 
+// Overridable in tests.
+var (
+	pacHTTPTimeout   = 10 * time.Second
+	pacRetryInterval = 30 * time.Second
+)
+
 type Pac struct {
 	location string
 	encoding string
-	mu       sync.Mutex
-	vm       *goja.Runtime
-	fn       goja.Callable
+
+	// mu guards (re)loading only; evaluation runs lock-free against the
+	// current runtime so concurrent requests do not serialize on the VM.
+	mu              sync.Mutex
+	lastLoadAttempt time.Time
+	runtime         atomic.Pointer[pacRuntime]
+}
+
+// pacRuntime is one compiled PAC script plus a pool of VMs that have run it.
+// A reload swaps in a whole new pacRuntime, so stale pooled VMs are dropped
+// together with the old one.
+type pacRuntime struct {
+	program *goja.Program
+	pool    sync.Pool // of *pacVM
+	owner   *Pac
+}
+
+type pacVM struct {
+	vm *goja.Runtime
+	fn goja.Callable
 }
 
 func New(location, encoding string) *Pac {
@@ -33,28 +60,47 @@ func New(location, encoding string) *Pac {
 }
 
 func (p *Pac) Loaded() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.fn != nil
+	return p.runtime.Load() != nil
 }
 
 func (p *Pac) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.fn = nil
-	p.vm = nil
+	p.runtime.Store(nil)
+	p.lastLoadAttempt = time.Time{} // allow an immediate reload
 }
 
-func (p *Pac) loadLocked() {
-	if p.fn != nil {
-		return
+// ensureLoaded returns the current runtime, loading the PAC source if needed.
+// Failed loads are retried at most every pacRetryInterval so a broken PAC
+// source is not re-fetched on every request.
+func (p *Pac) ensureLoaded() *pacRuntime {
+	if rt := p.runtime.Load(); rt != nil {
+		return rt
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if rt := p.runtime.Load(); rt != nil {
+		return rt
+	}
+	if time.Since(p.lastLoadAttempt) < pacRetryInterval {
+		return nil
+	}
+	rt := p.load()
+	if rt == nil {
+		p.lastLoadAttempt = time.Now()
+		return nil
+	}
+	p.runtime.Store(rt)
+	return rt
+}
+
+func (p *Pac) load() *pacRuntime {
 	data, err := p.readPACData()
 	if err != nil {
-		return
+		return nil
 	}
 	if p.encoding != "utf-8" && p.encoding != "latin-1" {
-		return
+		return nil
 	}
 	text := string(data)
 	if p.encoding == "latin-1" {
@@ -64,25 +110,40 @@ func (p *Pac) loadLocked() {
 		}
 		text = string(runes)
 	}
+	program, err := goja.Compile("pac.js", pacUtils+"\n"+text, false)
+	if err != nil {
+		return nil
+	}
+	rt := &pacRuntime{program: program, owner: p}
+	rt.pool.New = func() any { return rt.newVM() }
+	// Run the program once now so scripts without a usable FindProxyForURL
+	// are rejected at load time, matching the previous behavior.
+	vm := rt.newVM()
+	if vm == nil {
+		return nil
+	}
+	rt.pool.Put(vm)
+	return rt
+}
+
+func (rt *pacRuntime) newVM() *pacVM {
 	vm := goja.New()
-	_ = vm.Set("dnsResolve", p.DNSResolve)
-	_ = vm.Set("myIpAddress", p.MyIPAddress)
+	_ = vm.Set("dnsResolve", rt.owner.DNSResolve)
+	_ = vm.Set("myIpAddress", rt.owner.MyIPAddress)
 	_ = vm.Set("alert", func(string) {})
-	if _, err := vm.RunString(pacUtils + "\n" + text); err != nil {
-		return
+	if _, err := vm.RunProgram(rt.program); err != nil {
+		return nil
 	}
-	val := vm.Get("FindProxyForURL")
-	fn, ok := goja.AssertFunction(val)
+	fn, ok := goja.AssertFunction(vm.Get("FindProxyForURL"))
 	if !ok {
-		return
+		return nil
 	}
-	p.vm = vm
-	p.fn = fn
+	return &pacVM{vm: vm, fn: fn}
 }
 
 func (p *Pac) readPACData() ([]byte, error) {
 	if strings.HasPrefix(strings.ToLower(p.location), "http://") || strings.HasPrefix(strings.ToLower(p.location), "https://") {
-		client := http.Client{}
+		client := http.Client{Timeout: pacHTTPTimeout}
 		resp, err := client.Get(p.location)
 		if err != nil {
 			return nil, err
@@ -97,32 +158,35 @@ func (p *Pac) readPACData() ([]byte, error) {
 }
 
 func (p *Pac) FindProxyForURL(rawurl, host string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.loadLocked()
 	proxies := directProxy
-	if p.fn != nil {
-		if out, err := p.fn(goja.Undefined(), p.vm.ToValue(rawurl), p.vm.ToValue(host)); err == nil {
-			proxies = out.String()
+	if rt := p.ensureLoaded(); rt != nil {
+		if v, _ := rt.pool.Get().(*pacVM); v != nil {
+			if out, err := v.fn(goja.Undefined(), v.vm.ToValue(rawurl), v.vm.ToValue(host)); err == nil {
+				proxies = out.String()
+			}
+			rt.pool.Put(v)
 		}
 	}
-	replacements := map[string]string{
-		"PROXY ":  "",
-		"HTTP ":   "",
-		"HTTPS ":  "https://",
-		"SOCKS4 ": "socks4://",
-		"SOCKS5 ": "socks5://",
-		"SOCKS ":  "socks5://",
-	}
-	for old, repl := range replacements {
-		proxies = strings.ReplaceAll(proxies, old, repl)
-	}
-	return strings.ReplaceAll(proxies, ";", ",")
+	return normalizePACResult(proxies)
+}
+
+var pacResultReplacer = strings.NewReplacer(
+	"PROXY ", "",
+	"HTTP ", "",
+	"HTTPS ", "https://",
+	"SOCKS4 ", "socks4://",
+	"SOCKS5 ", "socks5://",
+	"SOCKS ", "socks5://",
+	";", ",",
+)
+
+func normalizePACResult(proxies string) string {
+	return pacResultReplacer.Replace(proxies)
 }
 
 func (p *Pac) DNSResolve(host string) string {
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
+	ips := dnscache.Lookup(host)
+	if len(ips) == 0 {
 		return ""
 	}
 	for _, ip := range ips {

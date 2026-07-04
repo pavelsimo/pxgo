@@ -8,6 +8,7 @@ import (
 	runtimedebug "runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,7 +20,7 @@ type Debug struct {
 	stdout io.Writer
 }
 
-var instance *Debug
+var instance atomic.Pointer[Debug]
 
 func Pprint(objs ...any) {
 	defer func() { _ = recover() }()
@@ -28,8 +29,9 @@ func Pprint(objs ...any) {
 
 func LogPanic(logPath string, recovered any) {
 	msg := fmt.Sprintf("\nPanic: %v\n%s", recovered, runtimedebug.Stack())
-	if instance != nil {
-		_, _ = instance.Write([]byte(msg))
+	if d := instance.Load(); d != nil {
+		_, _ = d.Write([]byte(msg))
+		d.sync() // panic forensics must reach disk
 		return
 	}
 	_, _ = os.Stderr.Write([]byte(msg))
@@ -45,26 +47,30 @@ func New(name string, appendMode bool) (*Debug, error) {
 	} else {
 		mode |= os.O_TRUNC
 	}
-	if instance == nil {
-		instance = &Debug{stdout: os.Stdout}
+	d := instance.Load()
+	if d == nil {
+		d = &Debug{stdout: os.Stdout}
 	}
-	instance.name = name
-	instance.mode = mode
-	if instance.stdout == nil {
-		instance.stdout = os.Stdout
+	d.mu.Lock()
+	d.name = name
+	d.mode = mode
+	if d.stdout == nil {
+		d.stdout = os.Stdout
 	}
-	return instance, instance.Reopen()
+	d.mu.Unlock()
+	instance.Store(d)
+	return d, d.Reopen()
 }
 
 func Instance() *Debug {
-	return instance
+	return instance.Load()
 }
 
 func ResetForTest() {
-	if instance != nil {
-		_ = instance.Close()
+	if d := instance.Load(); d != nil {
+		_ = d.Close()
 	}
-	instance = nil
+	instance.Store(nil)
 }
 
 func (d *Debug) Reopen() error {
@@ -101,12 +107,19 @@ func (d *Debug) Write(p []byte) (int, error) {
 	defer d.mu.Unlock()
 	if d.file != nil {
 		_, _ = d.file.Write(p)
-		_ = d.file.Sync()
 	}
 	if d.stdout != nil {
 		_, _ = d.stdout.Write(p)
 	}
 	return len(p), nil
+}
+
+func (d *Debug) sync() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.file != nil {
+		_ = d.file.Sync()
+	}
 }
 
 func (d *Debug) Print(msg string) {
@@ -130,8 +143,23 @@ func (d *Debug) GetPrint() func(string) {
 	return d.Print
 }
 
+// Enabled reports whether debug logging is active. Callers with expensive
+// message construction should check it (or use Dprintf) so disabled logging
+// costs a single atomic load.
+func Enabled() bool {
+	return instance.Load() != nil
+}
+
 func Dprint(msg string) {
-	if instance != nil {
-		instance.Print(msg)
+	if d := instance.Load(); d != nil {
+		d.Print(msg)
+	}
+}
+
+// Dprintf formats lazily: when logging is disabled the arguments are never
+// formatted, keeping hot paths allocation-free.
+func Dprintf(format string, args ...any) {
+	if d := instance.Load(); d != nil {
+		d.Print(fmt.Sprintf(format, args...))
 	}
 }
