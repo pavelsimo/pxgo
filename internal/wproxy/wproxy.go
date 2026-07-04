@@ -364,6 +364,8 @@ func (w *Wproxy) GetNetloc(rawurl string) (Server, string, error) {
 	return Server{Host: host, Port: port, Scheme: u.Scheme}, path, nil
 }
 
+// FindProxyForURL resolves the proxy candidates for rawurl. The returned
+// slice may be shared with the Wproxy and must be treated as read-only.
 func (w *Wproxy) FindProxyForURL(rawurl string) ([]Server, Server, string, error) {
 	netloc, path, err := w.GetNetloc(rawurl)
 	if err != nil {
@@ -390,7 +392,7 @@ func (w *Wproxy) FindProxyForURL(rawurl string) ([]Server, Server, string, error
 		}
 		return parseProxyOrDirect(out), netloc, path, nil
 	}
-	return append([]Server(nil), w.Servers...), netloc, path, nil
+	return w.Servers, netloc, path, nil
 }
 
 func parseProxyOrDirect(proxy string) []Server {

@@ -273,9 +273,13 @@ func ParseExpiry(output string, heimdal bool) (time.Time, bool) {
 	return parseMIT(output)
 }
 
+var (
+	mitExpiryRe     = regexp.MustCompile(`(?m)^\s*\d{1,2}/\d{1,2}/\d{2,4}\s+\d{2}:\d{2}:\d{2}\s+(\d{1,2}/\d{1,2}/\d{2,4}\s+\d{2}:\d{2}:\d{2})\s+krbtgt/`)
+	heimdalExpiryRe = regexp.MustCompile(`(?m)^\s*[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+krbtgt/`)
+)
+
 func parseMIT(output string) (time.Time, bool) {
-	re := regexp.MustCompile(`(?m)^\s*\d{1,2}/\d{1,2}/\d{2,4}\s+\d{2}:\d{2}:\d{2}\s+(\d{1,2}/\d{1,2}/\d{2,4}\s+\d{2}:\d{2}:\d{2})\s+krbtgt/`)
-	matches := re.FindStringSubmatch(output)
+	matches := mitExpiryRe.FindStringSubmatch(output)
 	if len(matches) != 2 {
 		return time.Time{}, false
 	}
@@ -288,8 +292,7 @@ func parseMIT(output string) (time.Time, bool) {
 }
 
 func parseHeimdal(output string) (time.Time, bool) {
-	re := regexp.MustCompile(`(?m)^\s*[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+krbtgt/`)
-	matches := re.FindStringSubmatch(output)
+	matches := heimdalExpiryRe.FindStringSubmatch(output)
 	if len(matches) != 2 {
 		return time.Time{}, false
 	}

@@ -64,10 +64,7 @@ type Server struct {
 	listeners  []net.Listener
 	port       int
 	stateMu    sync.RWMutex
-	clientMu   sync.Mutex
-	clientAuth map[string]bool
-	ntlm       map[string][]byte
-	ntlmSPNEGO map[string]bool
+	clients    sync.Map // remoteAddr string -> *clientState
 	krb        *kerberos.Manager
 	closed     chan struct{}
 	once       sync.Once
@@ -86,6 +83,16 @@ type Server struct {
 type hostIPEntry struct {
 	ips     []net.IP
 	expires time.Time
+}
+
+// clientState holds per-connection auth state, keyed by RemoteAddr in
+// Server.clients and dropped by the ConnState hook on close/hijack. Keeping
+// state per connection means auth checks never contend on a global lock.
+type clientState struct {
+	authed     atomic.Bool
+	mu         sync.Mutex // guards the NTLM handshake fields below
+	ntlm       []byte
+	ntlmSPNEGO bool
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -109,7 +116,7 @@ func New(cfg config.Config) (*Server, error) {
 	if krb != nil {
 		krb.Check(true)
 	}
-	s := &Server{cfg: cfg, w: wp, lastReload: time.Now(), port: cfg.Port, clientAuth: map[string]bool{}, ntlm: map[string][]byte{}, ntlmSPNEGO: map[string]bool{}, krb: krb, closed: make(chan struct{})}
+	s := &Server{cfg: cfg, w: wp, lastReload: time.Now(), port: cfg.Port, krb: krb, closed: make(chan struct{})}
 	s.clientAuthList = clientAuthMethods(cfg.ClientAuth)
 	if cfg.Allow != "" {
 		// Already validated by validateAllow above.
@@ -245,6 +252,7 @@ func (s *Server) Start() error {
 	s.port = port
 	s.srv = srv
 	s.stateMu.Unlock()
+	go s.maintenanceLoop()
 	errc := make(chan error, len(listeners))
 	for _, ln := range listeners {
 		debug.Dprint("listening on " + ln.Addr().String())
@@ -301,11 +309,6 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}()
 	debug.Dprint(req.Method + " " + req.RequestURI)
-	if err := s.reloadProxyIfDue(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadGateway)
-		return
-	}
-	s.reloadKerberos(false)
 	if !s.isClientAllowed(req.RemoteAddr) {
 		debug.Dprint("client not allowed: " + req.RemoteAddr)
 		http.Error(rw, "forbidden", http.StatusForbidden)
@@ -374,36 +377,63 @@ func (s *Server) cachedHostIPs() []net.IP {
 	return ips
 }
 
+// maintenanceLoop runs time-based housekeeping (proxy reload, Kerberos ticket
+// refresh) off the request path. It stops when Shutdown closes s.closed.
+func (s *Server) maintenanceLoop() {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			if err := s.reloadProxyIfDue(); err != nil {
+				debug.Dprintf("proxy reload failed, keeping previous: %v", err)
+			}
+			s.reloadKerberos(false)
+		case <-s.closed:
+			return
+		}
+	}
+}
+
 func (s *Server) reloadProxyIfDue() error {
 	if s.cfg.ProxyReload <= 0 {
 		return nil
 	}
 	s.wmu.RLock()
-	if !s.proxyReloadableLocked() {
-		s.wmu.RUnlock()
-		return nil
-	}
+	reloadable := s.proxyReloadableLocked()
 	due := time.Since(s.lastReload) >= time.Duration(s.cfg.ProxyReload)*time.Second
 	s.wmu.RUnlock()
-	if !due {
+	if !reloadable || !due {
 		return nil
 	}
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	if !s.proxyReloadableLocked() {
-		return nil
-	}
-	if time.Since(s.lastReload) < time.Duration(s.cfg.ProxyReload)*time.Second {
-		return nil
-	}
+	// buildWproxy may do network I/O (PAC download); keep it out of the lock
+	// so in-flight requests are never stalled by a slow reload.
 	wp, err := buildWproxy(s.cfg)
 	if err != nil {
 		return err
 	}
+	s.wmu.Lock()
+	changed := s.w == nil || wp.Mode != s.w.Mode || !equalServers(wp.Servers, s.w.Servers)
 	s.w = wp
 	s.lastReload = time.Now()
-	s.clearTransports()
+	s.wmu.Unlock()
+	if changed {
+		// Drop keep-alive pools only when the routing actually changed.
+		s.clearTransports()
+	}
 	return nil
+}
+
+func equalServers(a, b []wproxy.Server) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) proxyReloadableLocked() bool {
@@ -456,30 +486,35 @@ func isBodyMethod(method string) bool {
 	return method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch
 }
 
+// clientStateFor returns the state entry for remoteAddr, creating it if
+// needed.
+func (s *Server) clientStateFor(remoteAddr string) *clientState {
+	if v, ok := s.clients.Load(remoteAddr); ok {
+		return v.(*clientState)
+	}
+	v, _ := s.clients.LoadOrStore(remoteAddr, &clientState{})
+	return v.(*clientState)
+}
+
 func (s *Server) isClientAuthed(remoteAddr string) bool {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	return s.clientAuth[remoteAddr]
+	if v, ok := s.clients.Load(remoteAddr); ok {
+		return v.(*clientState).authed.Load()
+	}
+	return false
 }
 
 func (s *Server) setClientAuthed(remoteAddr string) {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	s.clientAuth[remoteAddr] = true
+	s.clientStateFor(remoteAddr).authed.Store(true)
 }
 
 func (s *Server) clearClientAuthed(remoteAddr string) {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	delete(s.clientAuth, remoteAddr)
+	if v, ok := s.clients.Load(remoteAddr); ok {
+		v.(*clientState).authed.Store(false)
+	}
 }
 
 func (s *Server) clearClientState(remoteAddr string) {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	delete(s.clientAuth, remoteAddr)
-	delete(s.ntlm, remoteAddr)
-	delete(s.ntlmSPNEGO, remoteAddr)
+	s.clients.Delete(remoteAddr)
 }
 
 func (s *Server) checkClientAuth(req *http.Request) bool {
@@ -643,30 +678,47 @@ func (s *Server) clientAuthChallenges(req *http.Request) []string {
 }
 
 func (s *Server) setNTLMChallenge(remoteAddr string, challenge []byte, usesSPNEGO bool) {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	s.ntlm[remoteAddr] = challenge
-	s.ntlmSPNEGO[remoteAddr] = usesSPNEGO
+	cs := s.clientStateFor(remoteAddr)
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.ntlm = challenge
+	cs.ntlmSPNEGO = usesSPNEGO
 }
 
+// ntlmChallenge returns the stored challenge for remoteAddr. Callers must
+// treat the returned slice as read-only.
 func (s *Server) ntlmChallenge(remoteAddr string) []byte {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	challenge := s.ntlm[remoteAddr]
-	return append([]byte(nil), challenge...)
+	v, ok := s.clients.Load(remoteAddr)
+	if !ok {
+		return nil
+	}
+	cs := v.(*clientState)
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.ntlm
 }
 
 func (s *Server) clearNTLMChallenge(remoteAddr string) {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	delete(s.ntlm, remoteAddr)
-	delete(s.ntlmSPNEGO, remoteAddr)
+	v, ok := s.clients.Load(remoteAddr)
+	if !ok {
+		return
+	}
+	cs := v.(*clientState)
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.ntlm = nil
+	cs.ntlmSPNEGO = false
 }
 
 func (s *Server) ntlmChallengeUsesSPNEGO(remoteAddr string) bool {
-	s.clientMu.Lock()
-	defer s.clientMu.Unlock()
-	return s.ntlmSPNEGO[remoteAddr]
+	v, ok := s.clients.Load(remoteAddr)
+	if !ok {
+		return false
+	}
+	cs := v.(*clientState)
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.ntlmSPNEGO
 }
 
 func isNTLMSSP(token []byte) bool {
@@ -1269,7 +1321,13 @@ func (s *Server) httpTransportForProxy(p wproxy.Server) *http.Transport {
 		return count < maxCachedTransports
 	})
 	if count >= maxCachedTransports {
-		s.clearTransports()
+		// Evict one arbitrary victim; clearing everything would force a full
+		// reconnect for all warm upstreams because one new key showed up.
+		s.transports.Range(func(k, v any) bool {
+			v.(*http.Transport).CloseIdleConnections()
+			s.transports.Delete(k)
+			return false
+		})
 	}
 	actual, _ := s.transports.LoadOrStore(key, transport)
 	return actual.(*http.Transport)
