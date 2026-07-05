@@ -70,13 +70,13 @@ func (s *Server) handleConnect(rw http.ResponseWriter, req *http.Request) {
 	// TLS ClientHello) are buffered in brw.Reader; relay reads the raw conn,
 	// so forward them explicitly or they would be lost.
 	if n := brw.Reader.Buffered(); n > 0 {
-		pipelined, _ := brw.Reader.Peek(n)
+		pipelined, _ := brw.Peek(n)
 		if _, err := upstream.Write(pipelined); err != nil {
 			_ = upstream.Close()
 			_ = client.Close()
 			return
 		}
-		_, _ = brw.Reader.Discard(n)
+		_, _ = brw.Discard(n)
 	}
 	debug.Dprint("CONNECT tunnel established: " + target)
 	atomic.AddInt64(&s.active, 1)
